@@ -23,6 +23,11 @@ const {
 
 
 const {
+    createDailySheet
+} = require("../services/dailySheetService");
+
+
+const {
     createOAuthClient
 } = require("../config/googleOAuth");
 
@@ -85,6 +90,45 @@ router.get("/connect", requireAuth, (req,res)=>{
 });
 
 
+
+
+// =================================
+// Statut de la connexion Google
+// =================================
+
+router.get("/status", requireAuth, async (req, res) => {
+
+    try {
+
+        const googleAccount =
+            await GoogleAccount.findOne({
+                where: {
+                    userId: req.user.id
+                }
+            });
+
+        return res.json({
+            success: true,
+            connected: !!googleAccount,
+            googleEmail: googleAccount?.googleEmail || null
+        });
+
+    }
+    catch (error) {
+
+        console.error(
+            "Erreur statut Google:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error: error.message
+        });
+
+    }
+
+});
 
 
 // =================================
@@ -402,40 +446,61 @@ if(!settings){
 
 if(!settings.sheetId){
 
-
-
     await createUserMasterSheet(userId);
-
-
 
     console.log(
         "✅ Maître client créé"
     );
 
-
 }
 else{
-
 
     console.log(
         "📄 Maître client déjà existant"
     );
 
-
 }
 
 
+// =================================
+// Création immédiate du journalier du jour
+// =================================
+// Le maître est disponible : le premier journalier
+// doit être créé immédiatement, sans attendre demain.
 
+const dailySheet =
+    await createDailySheet(userId);
 
-
-
-res.send(
-    "Google Drive connecté avec succès"
+console.log(
+    "✅ Journalier du jour prêt:",
+    dailySheet.spreadsheetId
 );
 
 
+res.send(`
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trackzo - Google connecté</title>
+<style>
+body{font-family:Arial,sans-serif;padding:32px;text-align:center;line-height:1.5}
+.box{max-width:520px;margin:auto}
+</style>
+</head>
+<body>
+<div class="box">
+<h2>✅ Google Drive connecté</h2>
+<p>Votre maître Trackzo et le journalier d'aujourd'hui sont prêts.</p>
+<p>Vous pouvez maintenant revenir dans l'application Trackzo.</p>
+</div>
+</body>
+</html>
+`);
 
 }
+
 catch(error){
 
 
