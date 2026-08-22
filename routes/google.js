@@ -23,11 +23,6 @@ const {
 
 
 const {
-    createDailySheet
-} = require("../services/dailySheetService");
-
-
-const {
     createOAuthClient
 } = require("../config/googleOAuth");
 
@@ -93,41 +88,23 @@ router.get("/connect", requireAuth, (req,res)=>{
 
 
 // =================================
-// Statut de la connexion Google
+// Statut connexion Google
 // =================================
-
 router.get("/status", requireAuth, async (req, res) => {
-
     try {
-
-        const googleAccount =
-            await GoogleAccount.findOne({
-                where: {
-                    userId: req.user.id
-                }
-            });
-
+        const account = await GoogleAccount.findOne({ where: { userId: req.user.id } });
+        const settings = await UserSettings.findOne({ where: { userId: req.user.id } });
         return res.json({
             success: true,
-            connected: !!googleAccount,
-            googleEmail: googleAccount?.googleEmail || null
+            connected: !!account,
+            googleEmail: account ? account.googleEmail : null,
+            ready: !!(account && account.trackzoFolderId && account.dailyFolderId && settings && settings.sheetId),
+            masterSheetId: settings ? settings.sheetId : null
         });
-
+    } catch (error) {
+        console.error("Erreur statut Google:", error);
+        return res.status(500).json({ success: false, error: error.message });
     }
-    catch (error) {
-
-        console.error(
-            "Erreur statut Google:",
-            error
-        );
-
-        return res.status(500).json({
-            success: false,
-            error: error.message
-        });
-
-    }
-
 });
 
 
@@ -446,61 +423,46 @@ if(!settings){
 
 if(!settings.sheetId){
 
+
+
     await createUserMasterSheet(userId);
+
+
 
     console.log(
         "✅ Maître client créé"
     );
 
+
 }
 else{
+
 
     console.log(
         "📄 Maître client déjà existant"
     );
 
+
 }
+
+
 
 
 // =================================
 // Création immédiate du journalier du jour
+// La première connexion ne doit pas attendre le lendemain.
 // =================================
-// Le maître est disponible : le premier journalier
-// doit être créé immédiatement, sans attendre demain.
+const { createDailySheet } = require("../services/dailySheetService");
+const dailySheet = await createDailySheet(userId);
+console.log("📅 Journalier du jour prêt:", dailySheet.spreadsheetId);
 
-const dailySheet =
-    await createDailySheet(userId);
-
-console.log(
-    "✅ Journalier du jour prêt:",
-    dailySheet.spreadsheetId
+res.send(
+    "Google Drive connecté avec succès. Votre fichier maître et le journalier du jour sont prêts. Vous pouvez revenir dans Trackzo."
 );
 
 
-res.send(`
-<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trackzo - Google connecté</title>
-<style>
-body{font-family:Arial,sans-serif;padding:32px;text-align:center;line-height:1.5}
-.box{max-width:520px;margin:auto}
-</style>
-</head>
-<body>
-<div class="box">
-<h2>✅ Google Drive connecté</h2>
-<p>Votre maître Trackzo et le journalier d'aujourd'hui sont prêts.</p>
-<p>Vous pouvez maintenant revenir dans l'application Trackzo.</p>
-</div>
-</body>
-</html>
-`);
 
 }
-
 catch(error){
 
 
