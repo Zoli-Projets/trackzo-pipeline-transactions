@@ -174,6 +174,40 @@ async function initDatabase() {
             "✅ Schéma Trackzo à jour"
         );
 
+        // ======================================
+        // MODÈLE TRACKZO DE RÉFÉRENCE
+        // ======================================
+        // La nouvelle base peut être vide alors que le modèle existe
+        // toujours dans Google Drive. On réenregistre donc automatiquement
+        // son ID comme modèle actif.
+        const Template = require("./models/Template");
+        const MASTER_TEMPLATE_FILE_ID =
+            process.env.TRACKZO_TEMPLATE_FILE_ID ||
+            "1jiUAdTSxs_xPSlHsolVIAN5roXNh3inp6UFSjOST3GI";
+
+        const [template] = await Template.findOrCreate({
+            where: { googleFileId: MASTER_TEMPLATE_FILE_ID },
+            defaults: {
+                version: process.env.TRACKZO_TEMPLATE_VERSION || "1.0",
+                googleFileId: MASTER_TEMPLATE_FILE_ID,
+                active: true,
+                description: "Modèle Trackzo"
+            }
+        });
+
+        if (!template.active) {
+            await Template.update(
+                { active: false },
+                { where: {} }
+            );
+            await template.update({ active: true });
+        }
+
+        console.log(
+            "📄 Modèle Trackzo actif :",
+            template.googleFileId
+        );
+
 
     }
     catch (error) {

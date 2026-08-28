@@ -146,10 +146,12 @@ async function createUserAccount(data){
 
 
 
-        console.log(
-            "📄 Modèle trouvé :",
-            activeTemplate.googleFileId
-        );
+        if (activeTemplate) {
+            console.log(
+                "📄 Modèle trouvé :",
+                activeTemplate.googleFileId
+            );
+        }
 
 
 
