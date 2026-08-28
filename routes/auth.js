@@ -252,6 +252,23 @@ router.post("/login", async (req, res) => {
 
 
 // ======================================
+// VÉRIFICATION DE SESSION
+// ======================================
+router.get("/me", requireAuth, async (req, res) => {
+    return res.json({
+        success: true,
+        user: {
+            id: req.user.id,
+            name: req.user.name,
+            phone: req.user.phone,
+            email: req.user.email,
+            country: req.user.country
+        }
+    });
+});
+
+
+// ======================================
 // DÉCONNEXION / RÉVOCATION DE SESSION
 // ======================================
 router.post("/logout", requireAuth, async (req, res) => {
