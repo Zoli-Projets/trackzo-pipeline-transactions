@@ -174,6 +174,18 @@ async function finalizeTrackzoSchema(sequelize) {
 
 
     // ==========================================
+    // SMS RECEIPTS
+    // ==========================================
+
+    await addColumnIfMissing(
+        sequelize,
+        "sms_receipts",
+        "message",
+        `TEXT`
+    );
+
+
+    // ==========================================
     // DAILY SHEETS
     // ==========================================
 

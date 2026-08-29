@@ -49,6 +49,7 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
             userId,
             smsHash,
             sender: String(sender),
+            message: messageText,
             receivedAt: Number(receivedAt) || Date.now()
         });
     } catch (error) {
