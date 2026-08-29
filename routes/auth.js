@@ -257,13 +257,7 @@ router.post("/login", async (req, res) => {
 router.get("/me", requireAuth, async (req, res) => {
     return res.json({
         success: true,
-        user: {
-            id: req.user.id,
-            name: req.user.name,
-            phone: req.user.phone,
-            email: req.user.email,
-            country: req.user.country
-        }
+        userId: req.user.id,
     });
 });
 
