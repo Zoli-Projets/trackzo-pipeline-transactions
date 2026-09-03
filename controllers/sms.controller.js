@@ -1,81 +1,71 @@
 const SmsService = require("../services/SmsService");
 const { requireAuth } = require("../middleware/auth");
 
+function normalizeSmsBody(body) {
+    const source = body && typeof body === "object" ? body : {};
+    return {
+        sender: typeof source.sender === "string" ? source.sender.trim() : source.sender,
+        message: typeof source.message === "string" ? source.message.trim() : source.message,
+        receivedAt: source.receivedAt,
+        smsHash: typeof source.smsHash === "string" ? source.smsHash.trim() : source.smsHash
+    };
+}
+
 exports.sendSms = [
     requireAuth,
     async (req, res) => {
         try {
-            // Selon la définition du modèle User, l'identifiant peut être exposé
-            // par Sequelize sous "id" ou sous "userId". Le device authentifié
-            // possède dans tous les cas la relation userId.
-            const userId =
-                req.user?.id ??
-                req.user?.userId ??
-                req.device?.userId;
+            const userId = req.user?.id ?? req.user?.userId ?? req.device?.userId;
+            const { sender, message, receivedAt, smsHash } = normalizeSmsBody(req.body);
 
-            const body = req.body || {};
-            const sender = body.sender;
-            const message = body.message;
-            const receivedAt = body.receivedAt;
-            const smsHash = body.smsHash;
-
-            console.log("📩 SMS reçu par le backend", {
-                authenticated: !!req.user,
+            console.log("📩 SMS API", {
+                contentType: req.get("content-type"),
+                bodyKeys: Object.keys(req.body || {}),
                 userIdPresent: !!userId,
-                senderPresent: !!sender,
-                messagePresent: !!message,
+                senderPresent: typeof sender === "string" && sender.length > 0,
+                messagePresent: typeof message === "string" && message.length > 0,
                 receivedAtPresent: receivedAt !== undefined && receivedAt !== null,
-                hashPresent: !!smsHash
+                hashPresent: typeof smsHash === "string" && smsHash.length > 0
             });
 
             if (!userId) {
-                return res.status(401).json({
-                    success: false,
-                    error: "Utilisateur authentifié introuvable"
-                });
+                return res.status(401).json({ success: false, error: "Utilisateur authentifié introuvable" });
             }
 
-            if (
-                sender === undefined ||
-                sender === null ||
-                String(sender).trim() === "" ||
-                message === undefined ||
-                message === null ||
-                String(message).trim() === "" ||
-                smsHash === undefined ||
-                smsHash === null ||
-                String(smsHash).trim() === ""
-            ) {
-                return res.status(400).json({
+            if (typeof sender !== "string" || !sender || typeof message !== "string" || !message || typeof smsHash !== "string" || !smsHash) {
+                return res.status(422).json({
                     success: false,
-                    error: "Données SMS incomplètes"
+                    error: "Données SMS incomplètes",
+                    fields: {
+                        sender: typeof sender === "string" && sender.length > 0,
+                        message: typeof message === "string" && message.length > 0,
+                        smsHash: typeof smsHash === "string" && smsHash.length > 0
+                    }
                 });
             }
 
             const result = await SmsService.send({
                 userId,
-                sender: String(sender),
-                message: String(message),
+                sender,
+                message,
                 receivedAt,
-                smsHash: String(smsHash)
+                smsHash
             });
 
-            return res.json({
+            return res.status(200).json({
                 success: true,
-                ...result
+                duplicate: result.duplicate === true,
+                spreadsheetId: result.spreadsheetId || null
             });
         } catch (err) {
             console.error("❌ Erreur envoi SMS:", err);
 
-            const status =
-                /incomplètes|introuvables|non connecté/i.test(err.message || "")
-                    ? 400
-                    : 500;
+            const message = err.message || "Erreur serveur";
+            const status = /Paramètres utilisateur introuvables|Compte Google non connecté/i.test(message)
+                ? 409
+                : 500;
 
-            return res.status(status).json({
-                success: false,
-                error: err.message || "Erreur serveur"
-            });
+            return res.status(status).json({ success: false, error: message });
         }
     }
 ];

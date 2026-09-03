@@ -6,9 +6,20 @@ const { getLocalDate, createDailySheet } = require("./dailySheetService");
 const { appendRawRows } = require("./dailySheetWriter");
 
 async function send({ userId, sender, message, receivedAt, smsHash }) {
-    if (!userId || !sender || !message || !smsHash) {
+    const normalizedSender = String(sender ?? "").trim();
+    const normalizedMessage = String(message ?? "").trim();
+    const normalizedHash = String(smsHash ?? "").trim();
+
+    if (!userId || !normalizedSender || !normalizedMessage || !normalizedHash) {
         throw new Error("Données SMS incomplètes");
     }
+
+    // L'idempotence est vérifiée avant tout appel Google : un retry ne doit jamais
+    // créer une seconde ligne dans la feuille.
+    const existingReceipt = await SmsReceipt.findOne({
+        where: { smsHash: normalizedHash }
+    });
+    if (existingReceipt) return { duplicate: true };
 
     const settings = await UserSettings.findOne({ where: { userId } });
     if (!settings) throw new Error("Paramètres utilisateur introuvables");
@@ -24,9 +35,11 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
         dailySheet = await createDailySheet(userId);
     }
 
-    const messageText = String(message).trim();
     const timestamp = Number(receivedAt);
-    const safeDate = Number.isFinite(timestamp) ? new Date(timestamp) : new Date();
+    const safeDate = Number.isFinite(timestamp) && timestamp > 0
+        ? new Date(timestamp)
+        : new Date();
+
     const time = new Intl.DateTimeFormat("fr-FR", {
         timeZone: timezone,
         hour: "2-digit",
@@ -35,25 +48,25 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
         hour12: false
     }).format(safeDate);
 
-    const existingReceipt = await SmsReceipt.findOne({ where: { smsHash, userId } });
-    if (existingReceipt) return { duplicate: true };
-
     await appendRawRows(
         googleAccount.refreshToken,
         dailySheet.spreadsheetId,
-        [[date, time, messageText, "PENDING"]]
+        [[date, time, normalizedMessage, "PENDING"]]
     );
 
     try {
         await SmsReceipt.create({
             userId,
-            smsHash,
-            sender: String(sender),
-            message: messageText,
-            receivedAt: Number(receivedAt) || Date.now()
+            smsHash: normalizedHash,
+            sender: normalizedSender,
+            message: normalizedMessage,
+            receivedAt: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now()
         });
     } catch (error) {
-        if (error.name !== "SequelizeUniqueConstraintError") throw error;
+        if (error.name === "SequelizeUniqueConstraintError") {
+            return { duplicate: true, spreadsheetId: dailySheet.spreadsheetId };
+        }
+        throw error;
     }
 
     return { duplicate: false, spreadsheetId: dailySheet.spreadsheetId };
