@@ -1,71 +1,87 @@
 const SmsService = require("../services/SmsService");
 const { requireAuth } = require("../middleware/auth");
 
-function normalizeSmsBody(body) {
-    const source = body && typeof body === "object" ? body : {};
-    return {
-        sender: typeof source.sender === "string" ? source.sender.trim() : source.sender,
-        message: typeof source.message === "string" ? source.message.trim() : source.message,
-        receivedAt: source.receivedAt,
-        smsHash: typeof source.smsHash === "string" ? source.smsHash.trim() : source.smsHash
-    };
-}
-
 exports.sendSms = [
     requireAuth,
     async (req, res) => {
         try {
-            const userId = req.user?.id ?? req.user?.userId ?? req.device?.userId;
-            const { sender, message, receivedAt, smsHash } = normalizeSmsBody(req.body);
+            const userId =
+                req.user?.id ??
+                req.user?.userId ??
+                req.device?.userId;
 
-            console.log("📩 SMS API", {
+            const body = req.body && typeof req.body === "object" ? req.body : {};
+
+            // Accepte uniquement les noms officiels envoyés par l'application.
+            // La journalisation indique les clés reçues sans afficher le contenu du SMS.
+            console.log("📩 SMS reçu par le backend", {
                 contentType: req.get("content-type"),
-                bodyKeys: Object.keys(req.body || {}),
+                bodyKeys: Object.keys(body),
+                bodyIsObject: typeof req.body === "object" && req.body !== null,
+                authenticated: !!req.user,
                 userIdPresent: !!userId,
-                senderPresent: typeof sender === "string" && sender.length > 0,
-                messagePresent: typeof message === "string" && message.length > 0,
-                receivedAtPresent: receivedAt !== undefined && receivedAt !== null,
-                hashPresent: typeof smsHash === "string" && smsHash.length > 0
+                senderPresent: typeof body.sender === "string" && body.sender.trim() !== "",
+                messagePresent: typeof body.message === "string" && body.message.trim() !== "",
+                receivedAtPresent: body.receivedAt !== undefined && body.receivedAt !== null,
+                hashPresent: typeof body.smsHash === "string" && body.smsHash.trim() !== ""
             });
 
             if (!userId) {
-                return res.status(401).json({ success: false, error: "Utilisateur authentifié introuvable" });
+                return res.status(401).json({
+                    success: false,
+                    error: "Utilisateur authentifié introuvable"
+                });
             }
 
-            if (typeof sender !== "string" || !sender || typeof message !== "string" || !message || typeof smsHash !== "string" || !smsHash) {
+            const sender = typeof body.sender === "string" ? body.sender.trim() : "";
+            const message = typeof body.message === "string" ? body.message.trim() : "";
+            const smsHash = typeof body.smsHash === "string" ? body.smsHash.trim() : "";
+            const receivedAt = body.receivedAt;
+
+            const fields = {
+                sender: sender.length > 0,
+                message: message.length > 0,
+                smsHash: smsHash.length > 0
+            };
+
+            if (!fields.sender || !fields.message || !fields.smsHash) {
+                console.warn("⚠️ SMS rejeté — champs manquants", fields);
                 return res.status(422).json({
                     success: false,
                     error: "Données SMS incomplètes",
-                    fields: {
-                        sender: typeof sender === "string" && sender.length > 0,
-                        message: typeof message === "string" && message.length > 0,
-                        smsHash: typeof smsHash === "string" && smsHash.length > 0
-                    }
+                    fields
                 });
             }
+
+            const timestamp = Number(receivedAt);
+            const normalizedReceivedAt = Number.isFinite(timestamp) && timestamp > 0
+                ? Math.trunc(timestamp)
+                : Date.now();
 
             const result = await SmsService.send({
                 userId,
                 sender,
                 message,
-                receivedAt,
+                receivedAt: normalizedReceivedAt,
                 smsHash
             });
 
-            return res.status(200).json({
+            return res.json({
                 success: true,
-                duplicate: result.duplicate === true,
-                spreadsheetId: result.spreadsheetId || null
+                ...result
             });
         } catch (err) {
             console.error("❌ Erreur envoi SMS:", err);
 
-            const message = err.message || "Erreur serveur";
-            const status = /Paramètres utilisateur introuvables|Compte Google non connecté/i.test(message)
-                ? 409
-                : 500;
+            const status =
+                /incomplètes|introuvables|non connecté/i.test(err.message || "")
+                    ? 400
+                    : 500;
 
-            return res.status(status).json({ success: false, error: message });
+            return res.status(status).json({
+                success: false,
+                error: err.message || "Erreur serveur"
+            });
         }
     }
 ];
