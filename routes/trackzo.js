@@ -782,7 +782,7 @@ router.post(
             // ======================================
 const result =
     await processDailySheet(
-        settings.userId,
+        googleAccount.refreshToken,
         spreadsheetId
     );
 
