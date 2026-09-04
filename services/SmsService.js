@@ -4,6 +4,7 @@ const GoogleAccount = require("../models/GoogleAccount");
 const SmsReceipt = require("../models/SmsReceipt");
 const { getLocalDate, createDailySheet } = require("./dailySheetService");
 const { appendRawRows } = require("./dailySheetWriter");
+const { processDailySheet } = require("./dailySheetProcessorService");
 
 async function send({ userId, sender, message, receivedAt, smsHash }) {
     const normalizedSender = String(sender ?? "").trim();
@@ -69,7 +70,28 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
         throw error;
     }
 
-    return { duplicate: false, spreadsheetId: dailySheet.spreadsheetId };
+    // Traiter immédiatement les lignes PENDING. Le traitement reste idempotent :
+    // les lignes déjà OK/ERROR sont ignorées par le processor.
+    let processing = null;
+    try {
+        processing = await processDailySheet(
+            googleAccount.refreshToken,
+            dailySheet.spreadsheetId
+        );
+        console.log("⚙️ SMS traité automatiquement:", {
+            spreadsheetId: dailySheet.spreadsheetId,
+            processed: processing.processed,
+            cleaned: processing.cleaned,
+            alerts: processing.alerts,
+            errors: processing.errors
+        });
+    } catch (error) {
+        // Le SMS est déjà enregistré dans Room côté mobile et dans SmsReceipt côté serveur.
+        // Une prochaine synchronisation/reprise pourra retraiter la ligne PENDING.
+        console.error("⚠️ SMS enregistré mais traitement de feuille différé:", error.message);
+    }
+
+    return { duplicate: false, spreadsheetId: dailySheet.spreadsheetId, processing };
 }
 
 module.exports = { send };
