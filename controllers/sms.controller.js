@@ -10,20 +10,18 @@ exports.sendSms = [
                 req.user?.userId ??
                 req.device?.userId;
 
-            const body = req.body && typeof req.body === "object" ? req.body : {};
+            const body = (req.body && typeof req.body === "object") ? req.body : {};
 
-            // Accepte uniquement les noms officiels envoyés par l'application.
-            // La journalisation indique les clés reçues sans afficher le contenu du SMS.
-            console.log("📩 SMS reçu par le backend", {
+            console.log("📩 SMS API reçu", {
+                method: req.method,
                 contentType: req.get("content-type"),
                 bodyKeys: Object.keys(body),
-                bodyIsObject: typeof req.body === "object" && req.body !== null,
-                authenticated: !!req.user,
-                userIdPresent: !!userId,
-                senderPresent: typeof body.sender === "string" && body.sender.trim() !== "",
-                messagePresent: typeof body.message === "string" && body.message.trim() !== "",
+                bodyType: typeof req.body,
+                senderPresent: typeof body.sender === "string" && body.sender.trim().length > 0,
+                messagePresent: typeof body.message === "string" && body.message.trim().length > 0,
                 receivedAtPresent: body.receivedAt !== undefined && body.receivedAt !== null,
-                hashPresent: typeof body.smsHash === "string" && body.smsHash.trim() !== ""
+                smsHashPresent: typeof body.smsHash === "string" && body.smsHash.trim().length > 0,
+                userIdPresent: !!userId
             });
 
             if (!userId) {
@@ -33,10 +31,10 @@ exports.sendSms = [
                 });
             }
 
-            const sender = typeof body.sender === "string" ? body.sender.trim() : "";
-            const message = typeof body.message === "string" ? body.message.trim() : "";
-            const smsHash = typeof body.smsHash === "string" ? body.smsHash.trim() : "";
-            const receivedAt = body.receivedAt;
+            const sender = String(body.sender ?? "").trim();
+            const message = String(body.message ?? "").trim();
+            const smsHash = String(body.smsHash ?? "").trim();
+            const receivedAt = Number(body.receivedAt);
 
             const fields = {
                 sender: sender.length > 0,
@@ -45,7 +43,10 @@ exports.sendSms = [
             };
 
             if (!fields.sender || !fields.message || !fields.smsHash) {
-                console.warn("⚠️ SMS rejeté — champs manquants", fields);
+                console.warn("⚠️ SMS rejeté — champs manquants", {
+                    ...fields,
+                    bodyKeys: Object.keys(body)
+                });
                 return res.status(422).json({
                     success: false,
                     error: "Données SMS incomplètes",
@@ -53,10 +54,10 @@ exports.sendSms = [
                 });
             }
 
-            const timestamp = Number(receivedAt);
-            const normalizedReceivedAt = Number.isFinite(timestamp) && timestamp > 0
-                ? Math.trunc(timestamp)
-                : Date.now();
+            const normalizedReceivedAt =
+                Number.isFinite(receivedAt) && receivedAt > 0
+                    ? Math.trunc(receivedAt)
+                    : Date.now();
 
             const result = await SmsService.send({
                 userId,
@@ -72,13 +73,7 @@ exports.sendSms = [
             });
         } catch (err) {
             console.error("❌ Erreur envoi SMS:", err);
-
-            const status =
-                /incomplètes|introuvables|non connecté/i.test(err.message || "")
-                    ? 400
-                    : 500;
-
-            return res.status(status).json({
+            return res.status(500).json({
                 success: false,
                 error: err.message || "Erreur serveur"
             });
