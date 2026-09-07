@@ -18,73 +18,87 @@ async function getSheetsClient(refreshToken) {
     return google.sheets({ version: "v4", auth: oauth2Client });
 }
 
-function formatDate(value) {
-    if (!value) return "";
-    if (value instanceof Date) return value;
-    return String(value);
-}
-
-function formatTime(value) {
-    if (!value) return "00:00:00";
-    const text = String(value);
-    if (/^\d{1,2}:\d{2}$/.test(text)) return `${text}:00`;
-    return text;
-}
-
+/**
+ * Lit les valeurs exactement comme elles sont affichees dans
+ * "Transactions brutes". Aucune conversion de date ou d'heure n'est faite.
+ * Ainsi Nettoye et Alertes recopient strictement les colonnes A et B.
+ */
 async function readRawRows(sheets, spreadsheetId) {
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: "'Transactions brutes'!A:D",
-        valueRenderOption: "UNFORMATTED_VALUE"
+        valueRenderOption: "FORMATTED_VALUE"
     });
 
     const rows = response.data.values || [];
-    return rows.slice(1)
+
+    return rows
+        .slice(1)
         .map((row, index) => ({
             rowNumber: index + 2,
-            date: formatDate(row[0]),
-            time: formatTime(row[1]),
+            date: row[0] == null ? "" : String(row[0]),
+            time: row[1] == null ? "" : String(row[1]),
             message: String(row[2] || "").trim(),
             status: String(row[3] || "").trim().toUpperCase()
         }))
-        .filter(row => row.message && row.status !== "OK" && row.status !== "ERROR");
+        .filter(row =>
+            row.message &&
+            row.status !== "OK" &&
+            row.status !== "ERROR"
+        );
 }
 
 async function readExistingReferences(sheets, spreadsheetId) {
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: "'Nettoyé'!F:F",
-        valueRenderOption: "UNFORMATTED_VALUE"
+        valueRenderOption: "FORMATTED_VALUE"
     });
 
     const references = new Set();
+
     for (const row of (response.data.values || []).slice(1)) {
         const ref = String(row[0] || "").trim().toUpperCase();
         if (ref) references.add(ref);
     }
+
     return references;
 }
 
+/**
+ * RAW est volontaire ici : les valeurs date/heure deja formatees lues dans
+ * Transactions brutes sont ecrites comme du texte et restent donc exactement
+ * identiques visuellement dans Nettoye et Alertes.
+ */
 async function appendRows(sheets, spreadsheetId, sheetName, rows) {
     if (!rows.length) return;
+
     await sheets.spreadsheets.values.append({
         spreadsheetId,
         range: `'${sheetName}'!A:G`,
-        valueInputOption: "USER_ENTERED",
+        valueInputOption: "RAW",
         insertDataOption: "INSERT_ROWS",
         requestBody: { values: rows }
     });
 }
 
+/**
+ * Marquage en un seul batch afin de reduire les appels Google Sheets et les
+ * risques de concurrence entre plusieurs executions proches du trigger.
+ */
 async function markProcessed(sheets, spreadsheetId, processed) {
-    for (const item of processed) {
-        await sheets.spreadsheets.values.update({
-            spreadsheetId,
-            range: `'Transactions brutes'!D${item.rowNumber}`,
+    if (!processed.length) return;
+
+    await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
             valueInputOption: "RAW",
-            requestBody: { values: [["OK"]] }
-        });
-    }
+            data: processed.map(item => ({
+                range: `'Transactions brutes'!D${item.rowNumber}`,
+                values: [["OK"]]
+            }))
+        }
+    });
 }
 
 async function processDailySheet(refreshToken, spreadsheetId) {
@@ -93,7 +107,13 @@ async function processDailySheet(refreshToken, spreadsheetId) {
 
     if (!rawRows.length) {
         const stats = await updateStatisticsSheet(refreshToken, spreadsheetId);
-        return { processed: 0, cleaned: 0, alerts: 0, errors: 0, statistics: stats };
+        return {
+            processed: 0,
+            cleaned: 0,
+            alerts: 0,
+            errors: 0,
+            statistics: stats
+        };
     }
 
     const existingReferences = await readExistingReferences(sheets, spreadsheetId);
@@ -107,11 +127,15 @@ async function processDailySheet(refreshToken, spreadsheetId) {
             const result = classifyMessage(raw.message);
 
             const amount = result.amount?.value || 0;
-            const amountDisplay = result.amount?.display || (amount ? `${amount} FCFA` : "0");
+            const amountDisplay =
+                result.amount?.display ||
+                (amount ? `${amount} FCFA` : "0");
             const type = result.type || "Autre";
             const operator = result.operator || "Inconnu";
             const reference = result.reference || "";
 
+            // IMPORTANT : raw.date et raw.time sont copies tels quels depuis
+            // Transactions brutes. Ils ne sont ni recalcules ni reformates.
             const row = [
                 raw.date,
                 raw.time,
@@ -131,15 +155,19 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                 operator === "Inconnu" ||
                 type === "Autre";
 
+            const normalizedReference = reference.toUpperCase();
             const duplicate =
                 Boolean(reference) &&
-                existingReferences.has(reference.toUpperCase());
+                existingReferences.has(normalizedReference);
 
             if (nonTransaction || insufficient || duplicate) {
                 alertRows.push(row);
             } else {
                 cleanRows.push(row);
-                if (reference) existingReferences.add(reference.toUpperCase());
+
+                if (reference) {
+                    existingReferences.add(normalizedReference);
+                }
 
                 if (amount > 1000000) {
                     alertRows.push(row);
@@ -152,17 +180,27 @@ async function processDailySheet(refreshToken, spreadsheetId) {
             console.error("Erreur traitement ligne", raw.rowNumber, error);
 
             alertRows.push([
-                raw.date, raw.time, 0,
-                "Erreur traitement", "", "", raw.message
+                raw.date,
+                raw.time,
+                0,
+                "Erreur traitement",
+                "",
+                "",
+                raw.message
             ]);
             processed.push(raw);
         }
     }
 
+    // L'ordre est volontaire : les lignes de sortie sont ecrites avant que la
+    // source ne soit marquee OK. En cas d'erreur d'ecriture, la source reste a
+    // retraiter au prochain trigger.
     await appendRows(sheets, spreadsheetId, "Nettoyé", cleanRows);
     await appendRows(sheets, spreadsheetId, "Alertes", alertRows);
     await markProcessed(sheets, spreadsheetId, processed);
 
+    // Les statistiques sont regenerees par le meme passage du trigger, une fois
+    // Nettoye mis a jour.
     const statistics = await updateStatisticsSheet(
         refreshToken,
         spreadsheetId
