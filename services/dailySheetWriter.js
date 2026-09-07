@@ -87,7 +87,9 @@ async function appendRawRows(refreshToken, spreadsheetId, rows) {
     await sheets.spreadsheets.values.append({
         spreadsheetId,
         range: "Transactions brutes!A:E",
-        valueInputOption: "USER_ENTERED",
+        // RAW empêche Google Sheets de réinterpréter 07-09-2026 et garantit
+        // que Nettoyé/Alerte pourront recopier exactement la valeur affichée.
+        valueInputOption: "RAW",
         insertDataOption: "INSERT_ROWS",
         requestBody: { values: rows }
     });

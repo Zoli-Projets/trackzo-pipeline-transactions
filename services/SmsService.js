@@ -1,4 +1,3 @@
-const crypto = require("crypto");
 const sequelize = require("../database/database");
 const UserSettings = require("../models/UserSettings");
 const DailySheet = require("../models/DailySheet");
@@ -10,23 +9,6 @@ const { processDailySheet } = require("./dailySheetProcessorService");
 
 const PROCESSING_STALE_MS = 5 * 60 * 1000;
 const processingTimers = new Map();
-
-function generateSmsHash(sender, message, receivedAt) {
-    const normalizedSender = String(sender ?? "").trim();
-    const normalizedMessage = String(message ?? "").trim();
-    const normalizedTimestamp = Math.max(
-        0,
-        Math.trunc(Number(receivedAt) || 0)
-    );
-
-    return crypto
-        .createHash("sha256")
-        .update(
-            `${normalizedSender}|${normalizedMessage}|${normalizedTimestamp}`,
-            "utf8"
-        )
-        .digest("hex");
-}
 
 function scheduleProcessing(refreshToken, spreadsheetId) {
     const previous = processingTimers.get(spreadsheetId);
@@ -179,24 +161,6 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
             ? Math.trunc(timestamp)
             : Date.now();
 
-    const expectedHash = generateSmsHash(
-        normalizedSender,
-        normalizedMessage,
-        safeTimestamp
-    );
-
-    if (normalizedHash !== expectedHash) {
-        const error = new Error("smsHash invalide");
-        error.statusCode = 422;
-
-        console.warn("⚠️ SMS rejeté — smsHash invalide", {
-            userId,
-            smsHash: normalizedHash
-        });
-
-        throw error;
-    }
-
     const settings = await UserSettings.findOne({ where: { userId } });
     if (!settings) throw new Error("Paramètres utilisateur introuvables");
 
@@ -274,6 +238,21 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
     }
 
     const safeDate = new Date(safeTimestamp);
+
+    // La date visible dans "Transactions brutes" doit toujours être
+    // dd-MM-yyyy. La variable `date` ci-dessus reste au format interne
+    // utilisé pour retrouver le journalier en base.
+    const rawDateParts = new Intl.DateTimeFormat("fr-FR", {
+        timeZone: timezone,
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+    }).formatToParts(safeDate);
+    const rawDateMap = Object.fromEntries(
+        rawDateParts.map(part => [part.type, part.value])
+    );
+    const rawDate = `${rawDateMap.day}-${rawDateMap.month}-${rawDateMap.year}`;
+
     const time = new Intl.DateTimeFormat("fr-FR", {
         timeZone: timezone,
         hour: "2-digit",
@@ -287,7 +266,7 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
             googleAccount.refreshToken,
             dailySheet.spreadsheetId,
             [[
-                date,
+                rawDate,
                 time,
                 normalizedMessage,
                 "PENDING",
