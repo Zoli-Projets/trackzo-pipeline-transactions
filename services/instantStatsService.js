@@ -239,9 +239,13 @@ async function generateInstantStats(
     // TRANSACTIONS RECENTES
     // ==================================
 
+    // Toutes les transactions du journalier sont renvoyées à l'application.
+    // L'ancienne limite `.slice(-10)` faisait croire que le scroll était
+    // bloqué alors que les lignes au-delà des 10 dernières n'étaient jamais
+    // envoyées par l'API.
     const recentTransactions =
         transactions
-            .slice(-10)
+            .slice()
             .reverse();
 
 
