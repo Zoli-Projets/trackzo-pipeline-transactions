@@ -66,19 +66,64 @@ async function readExistingReferences(sheets, spreadsheetId) {
 }
 
 /**
- * RAW est volontaire ici : les valeurs date/heure deja formatees lues dans
- * Transactions brutes sont ecrites comme du texte et restent donc exactement
- * identiques visuellement dans Nettoye et Alertes.
+ * Les nouvelles lignes sont inserees juste sous l'en-tete afin que Nettoye et
+ * Alertes aient exactement le meme ordre que Transactions brutes :
+ * plus recent en haut, plus ancien en bas.
+ *
+ * Les valeurs date/heure sont ecrites comme du texte, sans conversion, pour
+ * recopier strictement ce qui est affiche dans Transactions brutes.
  */
-async function appendRows(sheets, spreadsheetId, sheetName, rows) {
+async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows) {
     if (!rows.length) return;
 
-    await sheets.spreadsheets.values.append({
+    const metadata = await sheets.spreadsheets.get({
         spreadsheetId,
-        range: `'${sheetName}'!A:G`,
-        valueInputOption: "RAW",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: { values: rows }
+        fields: "sheets.properties(sheetId,title)"
+    });
+
+    const targetSheet = (metadata.data.sheets || []).find(
+        item => item.properties?.title === sheetName
+    );
+
+    const sheetId = targetSheet?.properties?.sheetId;
+    if (sheetId === undefined || sheetId === null) {
+        throw new Error(`Feuille introuvable: ${sheetName}`);
+    }
+
+    const rowData = rows.map(row => ({
+        values: row.slice(0, 7).map(value => ({
+            userEnteredValue: { stringValue: String(value ?? "") }
+        }))
+    }));
+
+    await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+            requests: [
+                {
+                    insertDimension: {
+                        range: {
+                            sheetId,
+                            dimension: "ROWS",
+                            startIndex: 1,
+                            endIndex: 1 + rows.length
+                        },
+                        inheritFromBefore: false
+                    }
+                },
+                {
+                    updateCells: {
+                        start: {
+                            sheetId,
+                            rowIndex: 1,
+                            columnIndex: 0
+                        },
+                        rows: rowData,
+                        fields: "userEnteredValue"
+                    }
+                }
+            ]
+        }
     });
 }
 
@@ -195,8 +240,8 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     // L'ordre est volontaire : les lignes de sortie sont ecrites avant que la
     // source ne soit marquee OK. En cas d'erreur d'ecriture, la source reste a
     // retraiter au prochain trigger.
-    await appendRows(sheets, spreadsheetId, "Nettoyé", cleanRows);
-    await appendRows(sheets, spreadsheetId, "Alertes", alertRows);
+    await insertRowsAtTop(sheets, spreadsheetId, "Nettoyé", cleanRows);
+    await insertRowsAtTop(sheets, spreadsheetId, "Alertes", alertRows);
     await markProcessed(sheets, spreadsheetId, processed);
 
     // Les statistiques sont regenerees par le meme passage du trigger, une fois
