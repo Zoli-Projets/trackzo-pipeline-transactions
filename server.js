@@ -32,6 +32,10 @@ require("./models/GoogleAccount");
 require("./models/DailySheet");
 require("./models/AppUpdate");
 require("./models/SmsReceipt");
+require("./models/Session");
+require("./models/VerificationCode");
+require("./models/Payment");
+require("./models/SubscriptionEvent");
 require("./models/associations");
 
 
@@ -48,6 +52,7 @@ const googleRoutes=require("./routes/google");
 const trackzoRoutes =require("./routes/trackzo");
 const dashboardRoutes =require("./routes/dashboard");
 const smsController = require("./controllers/sms.controller");
+const adminRoutes = require("./routes/admin");
 
 
 
@@ -58,6 +63,7 @@ app.use("/api/updates", updateRoutes);
 app.use("/api/google",googleRoutes);
 app.use("/api/trackzo",trackzoRoutes);
 app.use("/api/dashboard",dashboardRoutes);
+app.use("/api/admin", adminRoutes);
 app.post("/sms/send", smsController.sendSms);
   
 
@@ -135,6 +141,7 @@ app.get('/plans', (req, res) => {
 const {
     finalizeTrackzoSchema
 } = require("./database/migrations/finalize_trackzo_schema");
+const { finalizeAccountSchema } = require("./database/migrations/finalize_account_schema");
 
 
 async function initDatabase() {
@@ -169,6 +176,8 @@ async function initDatabase() {
         await finalizeTrackzoSchema(
             sequelize
         );
+
+        await finalizeAccountSchema(sequelize);
 
 
         console.log(

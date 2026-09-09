@@ -1,0 +1,21 @@
+# Variables à ajouter sur Render / environnement backend
+
+# OBLIGATOIRE pour les routes /api/admin/*
+TRACKZO_ADMIN_API_KEY=remplacer_par_une_cle_longue_aleatoire
+
+# Facultatif: nom affiché dans l'audit via header X-Admin-Actor
+# (le client admin envoie le nom de l'opérateur dans ce header)
+
+# Durée d'une session mobile, en jours
+SESSION_TTL_DAYS=90
+
+# Fournisseurs OTP.
+# Trackzo POSTe un JSON: { channel, to, code, purpose }
+# L'endpoint doit envoyer le code au destinataire et répondre HTTP 2xx.
+EMAIL_OTP_WEBHOOK_URL=https://votre-service-otp/email
+SMS_OTP_WEBHOOK_URL=https://votre-service-otp/sms
+OTP_WEBHOOK_SECRET=une_cle_partagee_optionnelle
+
+# Tant que EMAIL_OTP_WEBHOOK_URL n'est pas configuré, l'utilisateur reste connecté
+# sur son appareil actuel, mais la vérification email/récupération nouvel appareil
+# renvoie explicitement OTP_PROVIDER_NOT_CONFIGURED au lieu de simuler un envoi.

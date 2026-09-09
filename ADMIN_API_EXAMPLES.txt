@@ -1,0 +1,44 @@
+Toutes les routes ci-dessous exigent:
+  X-Admin-Key: <TRACKZO_ADMIN_API_KEY>
+  X-Admin-Actor: NomAdministrateur   (recommandé pour l'audit)
+
+GET /api/admin/users
+GET /api/admin/users?search=awa
+GET /api/admin/subscriptions
+GET /api/admin/subscription-events
+GET /api/admin/users/<userId>
+
+Désactiver un utilisateur:
+POST /api/admin/users/<userId>/status
+{
+  "status": "DISABLED",
+  "reason": "Réclamation confirmée / fraude / demande du propriétaire"
+}
+
+Suspendre temporairement:
+{
+  "status": "SUSPENDED",
+  "reason": "Vérification en cours"
+}
+
+Réactiver:
+{
+  "status": "ACTIVE",
+  "reason": "Réclamation justifiée, compte rétabli"
+}
+
+Offrir/prolonger un abonnement:
+POST /api/admin/users/<userId>/subscription/grant
+{
+  "plan": "PRO",
+  "type": "GIFT",
+  "durationDays": 30,
+  "reason": "Geste commercial suite à interruption de service",
+  "notes": "Ticket support #123"
+}
+
+Annuler un abonnement:
+POST /api/admin/users/<userId>/subscription/cancel
+{
+  "reason": "Demande du client"
+}
