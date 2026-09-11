@@ -170,34 +170,29 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
     }
 
     const timezone = settings.timezone || "Africa/Abidjan";
-    const date = getLocalDate(timezone);
 
-    let dailySheet = await DailySheet.findOne({ where: { userId, date } });
+    // IMPORTANT : le journalier est déterminé par la date de RÉCEPTION du SMS,
+    // jamais par la date à laquelle Internet revient ou le Worker envoie le SMS.
+    const smsInstant = new Date(safeTimestamp);
+    const date = getLocalDate(timezone, smsInstant);
 
-    if (!dailySheet) {
-        // Protection DB contre deux créations du journalier du même jour.
-        await sequelize.transaction(async transaction => {
-            await sequelize.query(
-                `SELECT pg_advisory_xact_lock(hashtext(:lockKey))`,
-                {
-                    replacements: {
-                        lockKey: `trackzo:daily-sheet:${userId}:${date}`
-                    },
-                    transaction
-                }
-            );
+    let dailySheet;
 
-            const current = await DailySheet.findOne({
-                where: { userId, date }
-            });
-
-            if (!current) {
-                await createDailySheet(userId);
+    // Protection DB contre deux créations/recréations simultanées du même journalier.
+    // createDailySheet vérifie aussi que le fichier Drive référencé existe encore.
+    await sequelize.transaction(async transaction => {
+        await sequelize.query(
+            `SELECT pg_advisory_xact_lock(hashtext(:lockKey))`,
+            {
+                replacements: {
+                    lockKey: `trackzo:daily-sheet:${userId}:${date}`
+                },
+                transaction
             }
-        });
+        );
 
-        dailySheet = await DailySheet.findOne({ where: { userId, date } });
-    }
+        dailySheet = await createDailySheet(userId, date);
+    });
 
     if (!dailySheet) {
         throw new Error("Journalier introuvable après création");
@@ -239,9 +234,6 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
 
     const safeDate = new Date(safeTimestamp);
 
-    // La date visible dans "Transactions brutes" doit toujours être
-    // dd-MM-yyyy. La variable `date` ci-dessus reste au format interne
-    // utilisé pour retrouver le journalier en base.
     const rawDateParts = new Intl.DateTimeFormat("fr-FR", {
         timeZone: timezone,
         day: "2-digit",
