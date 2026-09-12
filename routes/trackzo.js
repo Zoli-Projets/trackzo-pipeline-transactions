@@ -23,6 +23,10 @@ const {
     require("../services/dailySheetService");
 
 const {
+    deleteDriveFile
+} = require("../services/googleDriveService");
+
+const {
     generateInstantStats
 } =
     require("../services/instantStatsService");
@@ -396,6 +400,70 @@ router.get(
 
         }
 
+    }
+);
+
+
+// ======================================
+// SUPPRIMER UN JOURNALIER
+// ======================================
+
+router.delete(
+    "/daily-sheets/:id",
+    requireAuth,
+    async (req, res) => {
+        try {
+            const userId = req.user.id;
+            const dailySheetId = req.params.id;
+
+            const dailySheet = await DailySheet.findOne({
+                where: {
+                    id: dailySheetId,
+                    userId
+                }
+            });
+
+            if (!dailySheet) {
+                return res.status(404).json({
+                    success: false,
+                    error: "Journalier introuvable"
+                });
+            }
+
+            const googleAccount = await GoogleAccount.findOne({
+                where: { userId }
+            });
+
+            if (!googleAccount) {
+                return res.status(400).json({
+                    success: false,
+                    error: "Compte Google non connecté"
+                });
+            }
+
+            // Supprimer d'abord le vrai fichier Google. La ligne SQL n'est
+            // retirée qu'après confirmation. Un 404 Google signifie que le
+            // fichier avait déjà été supprimé manuellement.
+            await deleteDriveFile(
+                googleAccount.refreshToken,
+                dailySheet.spreadsheetId
+            );
+
+            await dailySheet.destroy();
+
+            return res.json({
+                success: true,
+                deletedId: dailySheetId,
+                date: dailySheet.date,
+                name: dailySheet.spreadsheetName
+            });
+        } catch (error) {
+            console.error("❌ Erreur suppression journalier:", error);
+            return res.status(500).json({
+                success: false,
+                error: error.message || "Impossible de supprimer le journalier"
+            });
+        }
     }
 );
 

@@ -140,8 +140,29 @@ async function createTrackzoStructure(
 
 
 
+async function deleteDriveFile(refreshToken, fileId) {
+    if (!refreshToken || !fileId) {
+        throw new Error("refreshToken et fileId obligatoires");
+    }
+
+    const drive = await getDriveClient(refreshToken);
+
+    try {
+        await drive.files.delete({ fileId });
+        return { deleted: true, alreadyMissing: false };
+    } catch (error) {
+        const status = error?.response?.status || error?.code;
+        if (Number(status) === 404) {
+            return { deleted: true, alreadyMissing: true };
+        }
+        throw error;
+    }
+}
+
+
 module.exports={
 
-    createTrackzoStructure
+    createTrackzoStructure,
+    deleteDriveFile
 
 };
