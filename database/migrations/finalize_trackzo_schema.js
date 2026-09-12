@@ -50,12 +50,8 @@ async function ensureSmsReceiptSchema(sequelize) {
         return;
     }
 
-    await addColumnIfMissing(
-        sequelize, "sms_receipts", "userId", `UUID`
-    );
-    await addColumnIfMissing(
-        sequelize, "sms_receipts", "smsHash", `VARCHAR(64)`
-    );
+    await addColumnIfMissing(sequelize, "sms_receipts", "userId", `UUID`);
+    await addColumnIfMissing(sequelize, "sms_receipts", "smsHash", `VARCHAR(64)`);
     await addColumnIfMissing(
         sequelize, "sms_receipts", "status",
         `VARCHAR(20) NOT NULL DEFAULT 'PROCESSING'`
@@ -69,9 +65,10 @@ async function ensureSmsReceiptSchema(sequelize) {
         `TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP`
     );
 
-    // Les anciennes versions stockaient le contenu complet des SMS en SQL.
-    // On garde ces colonnes uniquement pour compatibilité de schéma, mais
-    // elles deviennent facultatives puis sont vidées immédiatement.
+    // Compatibilité avec les anciennes versions : ces colonnes peuvent encore
+    // exister dans PostgreSQL, mais les nouveaux SMS n'y écrivent plus rien.
+    // DROP NOT NULL est une modification de métadonnées légère : aucun UPDATE
+    // massif et aucune suppression d'historique au démarrage.
     for (const column of ["sender", "message", "receivedAt"]) {
         if (await columnExists(sequelize, "sms_receipts", column)) {
             await sequelize.query(
@@ -80,68 +77,19 @@ async function ensureSmsReceiptSchema(sequelize) {
         }
     }
 
-    if (await columnExists(sequelize, "sms_receipts", "sender")) {
-        await sequelize.query(`UPDATE "sms_receipts" SET "sender" = NULL WHERE "sender" IS NOT NULL`);
-    }
-    if (await columnExists(sequelize, "sms_receipts", "message")) {
-        await sequelize.query(`UPDATE "sms_receipts" SET "message" = NULL WHERE "message" IS NOT NULL`);
-    }
-    if (await columnExists(sequelize, "sms_receipts", "receivedAt")) {
-        await sequelize.query(`UPDATE "sms_receipts" SET "receivedAt" = NULL WHERE "receivedAt" IS NOT NULL`);
-    }
-
-    // Les reçus terminés ne servent plus de stockage durable.
-    // L'anti-doublon durable est assuré par le hash technique dans Google Sheets.
+    // Conserve l'unicité déjà utilisée par la version stable. Pas de migration
+    // destructive d'index pendant le démarrage du serveur.
     await sequelize.query(`
-        DELETE FROM "sms_receipts"
-        WHERE "status" = 'COMPLETED'
-    `);
-
-    // Nettoyage d'éventuels doublons techniques par utilisateur/hash.
-    await sequelize.query(`
-        WITH ranked AS (
-            SELECT
-                ctid,
-                ROW_NUMBER() OVER (
-                    PARTITION BY "userId", "smsHash"
-                    ORDER BY "createdAt" ASC, ctid ASC
-                ) AS rn
-            FROM "sms_receipts"
-            WHERE "userId" IS NOT NULL
-              AND "smsHash" IS NOT NULL
-        )
-        DELETE FROM "sms_receipts" s
-        USING ranked r
-        WHERE s.ctid = r.ctid
-          AND r.rn > 1
-    `);
-
-    // Supprime l'ancien index global sur smsHash s'il existe.
-    await sequelize.query(`
-        DROP INDEX IF EXISTS sms_receipts_sms_hash_unique
-    `);
-
-    // Un verrou technique par utilisateur + hash.
-    await sequelize.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS sms_receipts_user_hash_unique
-        ON "sms_receipts" ("userId", "smsHash")
-        WHERE "userId" IS NOT NULL AND "smsHash" IS NOT NULL
+        CREATE UNIQUE INDEX IF NOT EXISTS sms_receipts_sms_hash_unique
+        ON "sms_receipts" ("smsHash")
+        WHERE "smsHash" IS NOT NULL
     `);
 
     await sequelize.query(`
         CREATE INDEX IF NOT EXISTS sms_receipts_status_idx
         ON "sms_receipts" ("status")
     `);
-
-    // Nettoyage de sécurité : un verrou PROCESSING abandonné depuis plus de
-    // 24 heures n'a plus d'utilité et ne doit pas occuper la base indéfiniment.
-    await sequelize.query(`
-        DELETE FROM "sms_receipts"
-        WHERE "status" = 'PROCESSING'
-          AND "updatedAt" < NOW() - INTERVAL '24 hours'
-    `);
 }
-
 async function finalizeTrackzoSchema(sequelize) {
     console.log("🔧 Vérification du schéma Trackzo...");
 

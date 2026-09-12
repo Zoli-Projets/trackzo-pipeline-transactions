@@ -57,10 +57,10 @@ async function claimReceipt({ userId, smsHash }) {
     return sequelize.transaction(async transaction => {
         return withAdvisoryLock(
             transaction,
-            `trackzo:sms:${userId}:${smsHash}`,
+            `trackzo:sms:${smsHash}`,
             async () => {
                 let receipt = await SmsReceipt.findOne({
-                    where: { userId, smsHash },
+                    where: { smsHash },
                     transaction,
                     lock: transaction.LOCK.UPDATE
                 });
@@ -74,10 +74,11 @@ async function claimReceipt({ userId, smsHash }) {
                         return { state: "PROCESSING" };
                     }
 
-                    await receipt.update(
-                        { status: "PROCESSING" },
-                        { transaction }
-                    );
+                    // Reprise d'un envoi dont le résultat Google était incertain.
+                    await receipt.update({
+                        userId,
+                        status: "PROCESSING"
+                    }, { transaction });
 
                     return { state: "RETRY", receiptId: receipt.id };
                 }
@@ -95,6 +96,11 @@ async function claimReceipt({ userId, smsHash }) {
                         }
                         throw error;
                     }
+                } else {
+                    await receipt.update({
+                        userId,
+                        status: "PROCESSING"
+                    }, { transaction });
                 }
 
                 return { state: "CLAIMED", receiptId: receipt.id };
@@ -102,15 +108,14 @@ async function claimReceipt({ userId, smsHash }) {
         );
     });
 }
-
-async function releaseReceipt(userId, smsHash) {
+async function releaseReceipt(smsHash) {
     return sequelize.transaction(async transaction => {
         return withAdvisoryLock(
             transaction,
-            `trackzo:sms:${userId}:${smsHash}`,
+            `trackzo:sms:${smsHash}`,
             async () => {
                 await SmsReceipt.destroy({
-                    where: { userId, smsHash },
+                    where: { smsHash },
                     transaction
                 });
             }
@@ -118,6 +123,13 @@ async function releaseReceipt(userId, smsHash) {
     });
 }
 
+function isGoogleNotFound(error) {
+    return error?.code === 404 ||
+        error?.status === 404 ||
+        error?.response?.status === 404 ||
+        error?.response?.data?.error?.code === 404 ||
+        (Array.isArray(error?.errors) && error.errors.some(item => item?.reason === "notFound"));
+}
 async function send({ userId, sender, message, receivedAt, smsHash }) {
     const normalizedSender = String(sender ?? "").trim();
     const normalizedMessage = String(message ?? "").trim();
@@ -142,29 +154,35 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
     }
 
     const timezone = settings.timezone || "Africa/Abidjan";
+    const safeDate = new Date(safeTimestamp);
+    const date = getLocalDate(timezone, safeDate);
 
-    // IMPORTANT : le journalier est déterminé par la date de RÉCEPTION du SMS,
-    // jamais par la date à laquelle Internet revient ou le Worker envoie le SMS.
-    const smsInstant = new Date(safeTimestamp);
-    const date = getLocalDate(timezone, smsInstant);
+    let dailySheet = await DailySheet.findOne({ where: { userId, date } });
 
-    let dailySheet;
+    if (!dailySheet) {
+        // Protection DB contre deux créations du journalier du même jour.
+        await sequelize.transaction(async transaction => {
+            await sequelize.query(
+                `SELECT pg_advisory_xact_lock(hashtext(:lockKey))`,
+                {
+                    replacements: {
+                        lockKey: `trackzo:daily-sheet:${userId}:${date}`
+                    },
+                    transaction
+                }
+            );
 
-    // Protection DB contre deux créations/recréations simultanées du même journalier.
-    // createDailySheet vérifie aussi que le fichier Drive référencé existe encore.
-    await sequelize.transaction(async transaction => {
-        await sequelize.query(
-            `SELECT pg_advisory_xact_lock(hashtext(:lockKey))`,
-            {
-                replacements: {
-                    lockKey: `trackzo:daily-sheet:${userId}:${date}`
-                },
-                transaction
+            const current = await DailySheet.findOne({
+                where: { userId, date }
+            });
+
+            if (!current) {
+                await createDailySheet(userId, date);
             }
-        );
+        });
 
-        dailySheet = await createDailySheet(userId, date);
-    });
+        dailySheet = await DailySheet.findOne({ where: { userId, date } });
+    }
 
     if (!dailySheet) {
         throw new Error("Journalier introuvable après création");
@@ -179,76 +197,109 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
         return { processing: true };
     }
 
-    // Google Sheets est la source durable. PostgreSQL ne conserve qu'un
-    // verrou technique temporaire pendant la tentative d'écriture.
-    const alreadyInSheet = await rawHashExists(
-        googleAccount.refreshToken,
-        dailySheet.spreadsheetId,
-        normalizedHash
-    );
+    // Google Sheets reste la source durable de l'anti-doublon. Aucun appel
+    // Drive supplémentaire n'est fait ici : on utilise directement le Sheet.
+    // Si Google répond réellement 404, alors seulement on recrée le journalier
+    // de la date du SMS, vide, puis on retente une seule fois.
+    const writeToDailySheet = async () => {
+        const alreadyInSheet = await rawHashExists(
+            googleAccount.refreshToken,
+            dailySheet.spreadsheetId,
+            normalizedHash
+        );
 
-    if (alreadyInSheet) {
-        await releaseReceipt(userId, normalizedHash);
-        scheduleProcessing(googleAccount.refreshToken, dailySheet.spreadsheetId);
-        return {
-            duplicate: true,
-            reconciled: true,
-            spreadsheetId: dailySheet.spreadsheetId
-        };
-    }
+        if (alreadyInSheet) {
+            return { duplicate: true, reconciled: true };
+        }
 
-    const safeDate = new Date(safeTimestamp);
+        const rawDateParts = new Intl.DateTimeFormat("fr-FR", {
+            timeZone: timezone,
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric"
+        }).formatToParts(safeDate);
+        const rawDateMap = Object.fromEntries(
+            rawDateParts.map(part => [part.type, part.value])
+        );
+        const rawDate = `${rawDateMap.day}-${rawDateMap.month}-${rawDateMap.year}`;
 
-    const rawDateParts = new Intl.DateTimeFormat("fr-FR", {
-        timeZone: timezone,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(safeDate);
-    const rawDateMap = Object.fromEntries(
-        rawDateParts.map(part => [part.type, part.value])
-    );
-    const rawDate = `${rawDateMap.day}-${rawDateMap.month}-${rawDateMap.year}`;
+        const time = new Intl.DateTimeFormat("fr-FR", {
+            timeZone: timezone,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).format(safeDate);
 
-    const time = new Intl.DateTimeFormat("fr-FR", {
-        timeZone: timezone,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false
-    }).format(safeDate);
-
-    try {
         await appendRawRows(
             googleAccount.refreshToken,
             dailySheet.spreadsheetId,
-            [[
-                rawDate,
-                time,
-                normalizedMessage,
-                "PENDING",
-                normalizedHash
-            ]]
+            [[rawDate, time, normalizedMessage, "PENDING", normalizedHash]]
         );
+
+        return { duplicate: false, accepted: true };
+    };
+
+    let writeResult;
+    try {
+        writeResult = await writeToDailySheet();
     } catch (error) {
-        // On conserve uniquement le petit verrou PROCESSING en DB.
-        // Aucun sender/message/receivedAt n'est stocké en PostgreSQL.
-        console.error("⚠️ Append Google incertain — receipt conservé PROCESSING", {
-            smsHash: normalizedHash,
-            error: error.message
+        if (!isGoogleNotFound(error)) {
+            // Résultat Google incertain : on garde uniquement le petit verrou
+            // PROCESSING. Le SMS complet reste dans Room côté téléphone.
+            console.error("⚠️ Écriture Google incertaine — receipt temporaire conservé", {
+                smsHash: normalizedHash,
+                error: error.message
+            });
+            throw error;
+        }
+
+        console.warn("♻️ Journalier Google introuvable — recréation ciblée", {
+            userId,
+            date,
+            previousSpreadsheetId: dailySheet.spreadsheetId
         });
-        throw error;
+
+        // Une seule instance recrée le fichier pour cette date.
+        await sequelize.transaction(async transaction => {
+            await sequelize.query(
+                `SELECT pg_advisory_xact_lock(hashtext(:lockKey))`,
+                {
+                    replacements: {
+                        lockKey: `trackzo:daily-sheet:${userId}:${date}`
+                    },
+                    transaction
+                }
+            );
+
+            const current = await DailySheet.findOne({ where: { userId, date } });
+
+            // Si une autre instance a déjà remplacé l'ancien spreadsheetId,
+            // on réutilise simplement son nouveau journalier.
+            if (current && current.spreadsheetId !== dailySheet.spreadsheetId) {
+                dailySheet = current;
+                return;
+            }
+
+            dailySheet = await createDailySheet(userId, date, {
+                replaceExisting: true
+            });
+        });
+
+        // Un seul retry après recréation : pas de boucle infinie.
+        writeResult = await writeToDailySheet();
     }
 
-    await releaseReceipt(userId, normalizedHash);
-
+    // Le hash est maintenant confirmé dans Google (écrit ou déjà présent).
+    // Le reçu SQL temporaire n'a plus aucune utilité et est supprimé.
+    await releaseReceipt(normalizedHash);
     scheduleProcessing(
         googleAccount.refreshToken,
         dailySheet.spreadsheetId
     );
 
     return {
-        duplicate: false,
+        ...writeResult,
         accepted: true,
         spreadsheetId: dailySheet.spreadsheetId
     };

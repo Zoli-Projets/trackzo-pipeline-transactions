@@ -1,4 +1,5 @@
 const { google } = require("googleapis");
+
 const GoogleAccount = require("../models/GoogleAccount");
 const UserSettings = require("../models/UserSettings");
 const DailySheet = require("../models/DailySheet");
@@ -48,46 +49,25 @@ async function getDriveClient(refreshToken) {
     return google.drive({ version: "v3", auth: oauth2Client });
 }
 
-function getLocalDate(timezone, instant = new Date()) {
-    const date = instant instanceof Date ? instant : new Date(instant);
-    if (Number.isNaN(date.getTime())) {
-        throw new Error("Date invalide pour le journalier");
-    }
-
+function getLocalDate(timezone, value = new Date()) {
     return new Intl.DateTimeFormat("en-CA", {
         timeZone: timezone,
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
-    }).format(date);
+    }).format(value);
 }
 
-async function driveFileIsUsable(refreshToken, fileId) {
-    if (!fileId) return false;
-
-    const drive = await getDriveClient(refreshToken);
-
-    try {
-        const response = await drive.files.get({
-            fileId,
-            fields: "id,trashed"
-        });
-        return Boolean(response.data?.id) && response.data.trashed !== true;
-    } catch (error) {
-        const status = error?.code || error?.response?.status;
-        if (status === 404) return false;
-        throw error;
-    }
+function isValidDateKey(value) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 }
 
 /**
- * Crée un journalier à partir du maître Trackzo.
- * targetLocalDate permet de créer exactement la date du SMS (YYYY-MM-DD),
- * même si le SMS arrive au backend plusieurs heures/jours plus tard.
- * Si une référence SQL existe mais que le fichier Drive a été supprimé ou
- * mis à la corbeille, elle est remplacée par un nouveau fichier de même date.
+ * Crée le journalier du jour à partir du maître Trackzo.
+ * Aucun Apps Script n'est requis : le backend peut donc toujours créer le
+ * premier journalier immédiatement après OAuth et lors de ensure-today.
  */
-async function createDailySheet(userId, targetLocalDate = null) {
+async function createDailySheet(userId, targetDate = null, options = {}) {
     const settings = await UserSettings.findOne({ where: { userId } });
     if (!settings) throw new Error("Paramètres utilisateur introuvables");
 
@@ -104,39 +84,19 @@ async function createDailySheet(userId, targetLocalDate = null) {
     }
 
     const timezone = settings.timezone || "Africa/Abidjan";
-    const localDate = targetLocalDate || getLocalDate(timezone);
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(localDate)) {
-        throw new Error("Date de journalier invalide: " + localDate);
+    const localDate = targetDate || getLocalDate(timezone);
+    if (!isValidDateKey(localDate)) {
+        throw new Error(`Date de journalier invalide: ${localDate}`);
     }
+
     const [year, month, day] = localDate.split("-");
     const dailyName = `Trans_${day}-${month}-${year}`;
+    const replaceExisting = options?.replaceExisting === true;
 
     const existing = await DailySheet.findOne({
         where: { userId, date: localDate }
     });
-    let recreatedDeletedFile = false;
-
-    if (existing) {
-        const usable = await driveFileIsUsable(
-            googleAccount.refreshToken,
-            existing.spreadsheetId
-        );
-
-        if (usable) return existing;
-
-        // Le fichier Google correspondant a été supprimé (ou mis à la corbeille).
-        // On retire uniquement la référence SQL devenue invalide, puis on recrée
-        // un journalier pour EXACTEMENT la même date.
-        console.warn(
-            "⚠️ Journalier Google absent/supprimé — recréation:",
-            existing.spreadsheetId,
-            "pour",
-            localDate
-        );
-        await existing.destroy();
-        recreatedDeletedFile = true;
-    }
+    if (existing && !replaceExisting) return existing;
 
     const drive = await getDriveClient(googleAccount.refreshToken);
 
@@ -149,32 +109,45 @@ async function createDailySheet(userId, targetLocalDate = null) {
         fields: "id,name,webViewLink"
     });
 
-    // Un journalier ne doit jamais contenir la feuille technique Configuration.
-    await removeConfigurationSheet(googleAccount.refreshToken, copy.data.id);
+    try {
+        // Un journalier ne doit jamais contenir la feuille technique Configuration.
+        await removeConfigurationSheet(googleAccount.refreshToken, copy.data.id);
 
-    const dailySheet = await DailySheet.create({
-        userId,
-        spreadsheetId: copy.data.id,
-        spreadsheetName: copy.data.name,
-        date: localDate,
-        timezone,
-        driveFolderId: googleAccount.dailyFolderId,
-        url: copy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${copy.data.id}`,
-        scriptId: null
-    });
+        const values = {
+            spreadsheetId: copy.data.id,
+            spreadsheetName: copy.data.name,
+            date: localDate,
+            timezone,
+            driveFolderId: googleAccount.dailyFolderId,
+            url: copy.data.webViewLink || `https://docs.google.com/spreadsheets/d/${copy.data.id}`,
+            scriptId: null
+        };
 
-    console.log(
-        recreatedDeletedFile ? "♻️ Journalier recréé:" : "📄 Journalier créé:",
-        copy.data.id,
-        "pour",
-        localDate
-    );
-    console.log("✅ Journalier enregistré en SQL");
+        let dailySheet;
+        if (existing) {
+            await existing.update(values);
+            dailySheet = existing;
+        } else {
+            dailySheet = await DailySheet.create({ userId, ...values });
+        }
 
-    // Si un ancien journalier a été supprimé, on recrée seulement sa structure.
-    // Les anciennes transactions ne sont pas restaurées depuis PostgreSQL :
-    // les SMS sont conservés uniquement dans Google Sheets.
-    return dailySheet;
+        console.log(
+            replaceExisting ? "♻️ Journalier recréé:" : "📄 Journalier créé:",
+            copy.data.id,
+            "pour",
+            localDate
+        );
+
+        return dailySheet;
+    } catch (error) {
+        // Si la copie a été créée mais que sa préparation/DB échoue, on évite
+        // de laisser un fichier orphelin dans Drive.
+        try {
+            await drive.files.delete({ fileId: copy.data.id });
+        } catch (_) {
+            // Nettoyage best-effort uniquement.
+        }
+        throw error;
+    }
 }
-
 module.exports = { createDailySheet, getLocalDate };
