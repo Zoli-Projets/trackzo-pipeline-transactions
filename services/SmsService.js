@@ -53,21 +53,17 @@ async function withAdvisoryLock(transaction, key, fn) {
  *
  * Le hash unique PostgreSQL reste la deuxième barrière contre les courses.
  */
-async function claimReceipt({ userId, sender, message, receivedAt, smsHash }) {
+async function claimReceipt({ userId, smsHash }) {
     return sequelize.transaction(async transaction => {
         return withAdvisoryLock(
             transaction,
-            `trackzo:sms:${smsHash}`,
+            `trackzo:sms:${userId}:${smsHash}`,
             async () => {
                 let receipt = await SmsReceipt.findOne({
-                    where: { smsHash },
+                    where: { userId, smsHash },
                     transaction,
                     lock: transaction.LOCK.UPDATE
                 });
-
-                if (receipt?.status === "COMPLETED") {
-                    return { state: "COMPLETED" };
-                }
 
                 if (receipt?.status === "PROCESSING") {
                     const updatedAt = receipt.updatedAt
@@ -78,14 +74,10 @@ async function claimReceipt({ userId, sender, message, receivedAt, smsHash }) {
                         return { state: "PROCESSING" };
                     }
 
-                    // Le worker précédent est considéré abandonné.
-                    await receipt.update({
-                        userId,
-                        sender,
-                        message,
-                        receivedAt,
-                        status: "PROCESSING"
-                    }, { transaction });
+                    await receipt.update(
+                        { status: "PROCESSING" },
+                        { transaction }
+                    );
 
                     return { state: "RETRY", receiptId: receipt.id };
                 }
@@ -95,26 +87,14 @@ async function claimReceipt({ userId, sender, message, receivedAt, smsHash }) {
                         receipt = await SmsReceipt.create({
                             userId,
                             smsHash,
-                            sender,
-                            message,
-                            receivedAt,
                             status: "PROCESSING"
                         }, { transaction });
                     } catch (error) {
                         if (error.name === "SequelizeUniqueConstraintError") {
-                            // Une autre instance a gagné la course.
                             return { state: "PROCESSING" };
                         }
                         throw error;
                     }
-                } else {
-                    await receipt.update({
-                        userId,
-                        sender,
-                        message,
-                        receivedAt,
-                        status: "PROCESSING"
-                    }, { transaction });
                 }
 
                 return { state: "CLAIMED", receiptId: receipt.id };
@@ -123,24 +103,16 @@ async function claimReceipt({ userId, sender, message, receivedAt, smsHash }) {
     });
 }
 
-async function markCompleted(smsHash) {
+async function releaseReceipt(userId, smsHash) {
     return sequelize.transaction(async transaction => {
         return withAdvisoryLock(
             transaction,
-            `trackzo:sms:${smsHash}`,
+            `trackzo:sms:${userId}:${smsHash}`,
             async () => {
-                const receipt = await SmsReceipt.findOne({
-                    where: { smsHash },
-                    transaction,
-                    lock: transaction.LOCK.UPDATE
+                await SmsReceipt.destroy({
+                    where: { userId, smsHash },
+                    transaction
                 });
-
-                if (!receipt) {
-                    throw new Error("Receipt SMS introuvable après écriture Google");
-                }
-
-                await receipt.update({ status: "COMPLETED" }, { transaction });
-                return receipt;
             }
         );
     });
@@ -200,22 +172,15 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
 
     const claim = await claimReceipt({
         userId,
-        sender: normalizedSender,
-        message: normalizedMessage,
-        receivedAt: safeTimestamp,
         smsHash: normalizedHash
     });
-
-    if (claim.state === "COMPLETED") {
-        return { duplicate: true, accepted: true, spreadsheetId: dailySheet.spreadsheetId };
-    }
 
     if (claim.state === "PROCESSING") {
         return { processing: true };
     }
 
-    // Pour un nouveau claim ou une reprise ancienne, Google est la source de
-    // vérité en cas de timeout/connexion coupée après append.
+    // Google Sheets est la source durable. PostgreSQL ne conserve qu'un
+    // verrou technique temporaire pendant la tentative d'écriture.
     const alreadyInSheet = await rawHashExists(
         googleAccount.refreshToken,
         dailySheet.spreadsheetId,
@@ -223,7 +188,7 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
     );
 
     if (alreadyInSheet) {
-        await markCompleted(normalizedHash);
+        await releaseReceipt(userId, normalizedHash);
         scheduleProcessing(googleAccount.refreshToken, dailySheet.spreadsheetId);
         return {
             duplicate: true,
@@ -266,8 +231,8 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
             ]]
         );
     } catch (error) {
-        // IMPORTANT: on conserve PROCESSING en DB.
-        // Une prochaine tentative réconciliera E:E avant tout nouvel append.
+        // On conserve uniquement le petit verrou PROCESSING en DB.
+        // Aucun sender/message/receivedAt n'est stocké en PostgreSQL.
         console.error("⚠️ Append Google incertain — receipt conservé PROCESSING", {
             smsHash: normalizedHash,
             error: error.message
@@ -275,7 +240,7 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
         throw error;
     }
 
-    await markCompleted(normalizedHash);
+    await releaseReceipt(userId, normalizedHash);
 
     scheduleProcessing(
         googleAccount.refreshToken,

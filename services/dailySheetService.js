@@ -1,12 +1,7 @@
 const { google } = require("googleapis");
-const { Op } = require("sequelize");
-
 const GoogleAccount = require("../models/GoogleAccount");
 const UserSettings = require("../models/UserSettings");
 const DailySheet = require("../models/DailySheet");
-const SmsReceipt = require("../models/SmsReceipt");
-const { appendRawRows } = require("./dailySheetWriter");
-const { processDailySheet } = require("./dailySheetProcessorService");
 
 async function removeConfigurationSheet(refreshToken, spreadsheetId) {
     const oauth2Client = new google.auth.OAuth2(
@@ -83,80 +78,6 @@ async function driveFileIsUsable(refreshToken, fileId) {
         if (status === 404) return false;
         throw error;
     }
-}
-
-function formatSmsDateTime(timestamp, timezone) {
-    const instant = new Date(Number(timestamp));
-    const parts = new Intl.DateTimeFormat("fr-FR", {
-        timeZone: timezone,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(instant);
-    const map = Object.fromEntries(parts.map(part => [part.type, part.value]));
-
-    return {
-        rawDate: `${map.day}-${map.month}-${map.year}`,
-        time: new Intl.DateTimeFormat("fr-FR", {
-            timeZone: timezone,
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false
-        }).format(instant)
-    };
-}
-
-async function restoreDeletedDailySheet({
-    userId,
-    localDate,
-    timezone,
-    refreshToken,
-    spreadsheetId
-}) {
-    const [year, month, day] = localDate.split("-").map(Number);
-    const utcAnchor = Date.UTC(year, month - 1, day);
-
-    // Fenêtre large couvrant tous les fuseaux, puis filtrage exact dans le
-    // fuseau utilisateur afin de ne restaurer que les SMS de ce journalier.
-    const candidates = await SmsReceipt.findAll({
-        where: {
-            userId,
-            status: "COMPLETED",
-            receivedAt: {
-                [Op.between]: [
-                    utcAnchor - 14 * 60 * 60 * 1000,
-                    utcAnchor + 38 * 60 * 60 * 1000
-                ]
-            }
-        }
-    });
-
-    const receipts = candidates
-        .filter(receipt =>
-            getLocalDate(timezone, new Date(Number(receipt.receivedAt))) === localDate
-        )
-        .sort((a, b) => Number(b.receivedAt) - Number(a.receivedAt));
-
-    if (receipts.length === 0) return 0;
-
-    const rows = receipts.map(receipt => {
-        const { rawDate, time } = formatSmsDateTime(receipt.receivedAt, timezone);
-        return [
-            rawDate,
-            time,
-            String(receipt.message || "").trim(),
-            "PENDING",
-            String(receipt.smsHash || "").trim()
-        ];
-    });
-
-    await appendRawRows(refreshToken, spreadsheetId, rows);
-
-    // Régénère Nettoyé / Alertes / Statistiques depuis les transactions brutes.
-    await processDailySheet(refreshToken, spreadsheetId);
-
-    return rows.length;
 }
 
 /**
@@ -250,40 +171,9 @@ async function createDailySheet(userId, targetLocalDate = null) {
     );
     console.log("✅ Journalier enregistré en SQL");
 
-    if (recreatedDeletedFile) {
-        try {
-            const restored = await restoreDeletedDailySheet({
-                userId,
-                localDate,
-                timezone,
-                refreshToken: googleAccount.refreshToken,
-                spreadsheetId: dailySheet.spreadsheetId
-            });
-
-            console.log("♻️ Transactions restaurées après suppression du journalier:", {
-                date: localDate,
-                restored
-            });
-        } catch (error) {
-            // Ne jamais laisser en SQL un fichier fraîchement recréé mais incomplet.
-            // Ainsi le prochain retry recommencera toute la reconstruction.
-            console.error("❌ Reconstruction du journalier échouée — rollback logique:", {
-                date: localDate,
-                spreadsheetId: dailySheet.spreadsheetId,
-                error: error.message
-            });
-
-            await dailySheet.destroy().catch(() => {});
-            await drive.files.update({
-                fileId: copy.data.id,
-                requestBody: { trashed: true },
-                fields: "id,trashed"
-            }).catch(() => {});
-
-            throw error;
-        }
-    }
-
+    // Si un ancien journalier a été supprimé, on recrée seulement sa structure.
+    // Les anciennes transactions ne sont pas restaurées depuis PostgreSQL :
+    // les SMS sont conservés uniquement dans Google Sheets.
     return dailySheet;
 }
 

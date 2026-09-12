@@ -47,27 +47,14 @@ async function addColumnIfMissing(sequelize, tableName, columnName, definition) 
 
 async function ensureSmsReceiptSchema(sequelize) {
     if (!(await tableExists(sequelize, "sms_receipts"))) {
-        // sequelize.sync() est censé créer la table. On ne fabrique pas ici
-        // une table concurrente avec une définition différente.
         return;
     }
 
-    // Le modèle Sequelize attend ces colonnes. status était la cause du
-    // SequelizeDatabaseError observé en production.
     await addColumnIfMissing(
         sequelize, "sms_receipts", "userId", `UUID`
     );
     await addColumnIfMissing(
         sequelize, "sms_receipts", "smsHash", `VARCHAR(64)`
-    );
-    await addColumnIfMissing(
-        sequelize, "sms_receipts", "sender", `VARCHAR(255)`
-    );
-    await addColumnIfMissing(
-        sequelize, "sms_receipts", "message", `TEXT`
-    );
-    await addColumnIfMissing(
-        sequelize, "sms_receipts", "receivedAt", `BIGINT`
     );
     await addColumnIfMissing(
         sequelize, "sms_receipts", "status",
@@ -82,21 +69,46 @@ async function ensureSmsReceiptSchema(sequelize) {
         `TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP`
     );
 
-    // Nettoyage des éventuels doublons historiques avant de poser l'unicité.
-    // On conserve en priorité COMPLETED, puis la ligne la plus ancienne.
+    // Les anciennes versions stockaient le contenu complet des SMS en SQL.
+    // On garde ces colonnes uniquement pour compatibilité de schéma, mais
+    // elles deviennent facultatives puis sont vidées immédiatement.
+    for (const column of ["sender", "message", "receivedAt"]) {
+        if (await columnExists(sequelize, "sms_receipts", column)) {
+            await sequelize.query(
+                `ALTER TABLE "sms_receipts" ALTER COLUMN "${column}" DROP NOT NULL`
+            );
+        }
+    }
+
+    if (await columnExists(sequelize, "sms_receipts", "sender")) {
+        await sequelize.query(`UPDATE "sms_receipts" SET "sender" = NULL WHERE "sender" IS NOT NULL`);
+    }
+    if (await columnExists(sequelize, "sms_receipts", "message")) {
+        await sequelize.query(`UPDATE "sms_receipts" SET "message" = NULL WHERE "message" IS NOT NULL`);
+    }
+    if (await columnExists(sequelize, "sms_receipts", "receivedAt")) {
+        await sequelize.query(`UPDATE "sms_receipts" SET "receivedAt" = NULL WHERE "receivedAt" IS NOT NULL`);
+    }
+
+    // Les reçus terminés ne servent plus de stockage durable.
+    // L'anti-doublon durable est assuré par le hash technique dans Google Sheets.
+    await sequelize.query(`
+        DELETE FROM "sms_receipts"
+        WHERE "status" = 'COMPLETED'
+    `);
+
+    // Nettoyage d'éventuels doublons techniques par utilisateur/hash.
     await sequelize.query(`
         WITH ranked AS (
             SELECT
                 ctid,
                 ROW_NUMBER() OVER (
-                    PARTITION BY "smsHash"
-                    ORDER BY
-                        CASE WHEN "status" = 'COMPLETED' THEN 0 ELSE 1 END,
-                        "createdAt" ASC,
-                        ctid ASC
+                    PARTITION BY "userId", "smsHash"
+                    ORDER BY "createdAt" ASC, ctid ASC
                 ) AS rn
             FROM "sms_receipts"
-            WHERE "smsHash" IS NOT NULL
+            WHERE "userId" IS NOT NULL
+              AND "smsHash" IS NOT NULL
         )
         DELETE FROM "sms_receipts" s
         USING ranked r
@@ -104,21 +116,29 @@ async function ensureSmsReceiptSchema(sequelize) {
           AND r.rn > 1
     `);
 
-    // Une seule réception logique par hash. L'index est idempotent.
+    // Supprime l'ancien index global sur smsHash s'il existe.
     await sequelize.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS sms_receipts_sms_hash_unique
-        ON "sms_receipts" ("smsHash")
-        WHERE "smsHash" IS NOT NULL
+        DROP INDEX IF EXISTS sms_receipts_sms_hash_unique
     `);
 
+    // Un verrou technique par utilisateur + hash.
     await sequelize.query(`
-        CREATE INDEX IF NOT EXISTS sms_receipts_user_id_idx
-        ON "sms_receipts" ("userId")
+        CREATE UNIQUE INDEX IF NOT EXISTS sms_receipts_user_hash_unique
+        ON "sms_receipts" ("userId", "smsHash")
+        WHERE "userId" IS NOT NULL AND "smsHash" IS NOT NULL
     `);
 
     await sequelize.query(`
         CREATE INDEX IF NOT EXISTS sms_receipts_status_idx
         ON "sms_receipts" ("status")
+    `);
+
+    // Nettoyage de sécurité : un verrou PROCESSING abandonné depuis plus de
+    // 24 heures n'a plus d'utilité et ne doit pas occuper la base indéfiniment.
+    await sequelize.query(`
+        DELETE FROM "sms_receipts"
+        WHERE "status" = 'PROCESSING'
+          AND "updatedAt" < NOW() - INTERVAL '24 hours'
     `);
 }
 
