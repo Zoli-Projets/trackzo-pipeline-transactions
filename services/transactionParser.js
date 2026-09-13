@@ -196,6 +196,14 @@ function detectReference(message) {
 
         /\bID\s+Transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,})/i,
 
+        // Certains téléphones/UI injectent de la ponctuation ou même un lien
+        // entre "ID" et "Transaction" (ex: "ID (http://f.id/)Transaction:").
+        /\bID\b[^\r\n]{0,50}?Transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,})/i,
+
+        // Références Mobile Money structurées, même si le libellé autour est atypique.
+        // Ex: CO260910.1748.D25764
+        /\b([A-Z]{2}\d{6}\.\d{4}\.[A-Z0-9]{4,})\b/i,
+
         /\b(?:Trx\s*ID|TRXID|TrxID|Trx)\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,})/i,
 
         /\bNo\.?\s*(?:de\s+)?transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,})/i,
