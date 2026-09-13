@@ -15,7 +15,7 @@ app.use(cors());
 
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: false, limit: '256kb' }));
-app.use(express.static('.') );
+app.use(express.static(__dirname));
 
 // ==========================
 // DATABASE
