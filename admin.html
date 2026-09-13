@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Trackzo Admin — Abonnements V1</title>
+  <style>
+    :root{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#172033;background:#f4f6f8}
+    *{box-sizing:border-box} body{margin:0} header{background:#111827;color:white;padding:18px 22px}
+    header h1{margin:0;font-size:20px} header p{margin:5px 0 0;color:#cbd5e1;font-size:13px}
+    main{max-width:1050px;margin:24px auto;padding:0 16px}.card{background:white;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 2px 10px rgba(0,0,0,.04)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+    label{display:block;font-size:12px;font-weight:700;margin-bottom:5px;color:#475569} input,select,textarea{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:9px;background:white}
+    .field{flex:1;min-width:180px} button{border:0;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer;background:#111827;color:white}
+    button.secondary{background:#475569} button.danger{background:#b91c1c} button:disabled{opacity:.5;cursor:not-allowed}
+    .muted{color:#64748b;font-size:13px}.ok{color:#166534}.error{color:#b91c1c}.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef2ff;font-size:12px;font-weight:700}
+    table{width:100%;border-collapse:collapse;margin-top:12px} th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #e5e7eb;font-size:13px} tr.user{cursor:pointer} tr.user:hover{background:#f8fafc}
+    .hidden{display:none}.notice{padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+    @media(max-width:650px){table th:nth-child(3),table td:nth-child(3){display:none}}
+  </style>
+</head>
+<body>
+<header><h1>Trackzo Admin — Abonnements V1</h1><p>Activation et prolongation manuelles. Ne partage jamais ta clé administrateur.</p></header>
+<main>
+  <section class="card">
+    <div class="row">
+      <div class="field"><label>Clé administrateur</label><input id="key" type="password" autocomplete="off" placeholder="TRACKZO_ADMIN_API_KEY"></div>
+      <div class="field"><label>Nom administrateur</label><input id="actor" value="ADMIN" placeholder="Ex. Support Trackzo"></div>
+      <button id="save">Utiliser cette clé</button>
+    </div>
+    <p class="muted">La clé reste uniquement dans cet onglet du navigateur et n'est pas enregistrée dans le stockage local.</p>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <div class="field"><label>Rechercher un utilisateur</label><input id="search" placeholder="Nom, téléphone ou e-mail"></div>
+      <button id="searchBtn">Rechercher</button>
+    </div>
+    <div id="message" class="muted" style="margin-top:10px"></div>
+    <div style="overflow:auto"><table id="usersTable" class="hidden">
+      <thead><tr><th>Utilisateur</th><th>Téléphone</th><th>E-mail</th><th>Plan</th><th>Expiration</th></tr></thead>
+      <tbody id="usersBody"></tbody>
+    </table></div>
+  </section>
+
+  <section id="detailCard" class="card hidden">
+    <h2 style="margin-top:0;font-size:18px">Utilisateur sélectionné</h2>
+    <div id="userDetail"></div>
+    <hr style="border:0;border-top:1px solid #e5e7eb;margin:18px 0">
+    <h3 style="font-size:16px">Activer / prolonger</h3>
+    <div class="grid">
+      <div><label>Formule</label><select id="plan"><option>BASIC</option><option>PRO</option><option>ENTERPRISE</option></select></div>
+      <div><label>Durée (jours)</label><input id="days" type="number" min="1" max="3650" value="30"></div>
+      <div><label>Type</label><select id="type"><option value="PAID">Abonnement manuel</option><option value="GIFT">Offert</option></select></div>
+    </div>
+    <div style="margin-top:12px"><label>Motif</label><input id="reason" value="Activation manuelle V1" placeholder="Motif obligatoire"></div>
+    <div style="margin-top:12px"><label>Note interne (facultatif)</label><textarea id="notes" rows="2"></textarea></div>
+    <div class="actions">
+      <button id="grantBtn">Activer / prolonger</button>
+      <button id="cancelBtn" class="danger">Annuler l'abonnement</button>
+    </div>
+    <div id="actionMessage" class="muted" style="margin-top:10px"></div>
+  </section>
+</main>
+<script>
+const API='/api/admin';
+let selectedUserId=null;
+const $=id=>document.getElementById(id);
+function headers(){const key=$('key').value.trim();if(!key)throw new Error('Entre la clé administrateur.');return {'Content-Type':'application/json','X-Admin-Key':key,'X-Admin-Actor':$('actor').value.trim()||'ADMIN'};}
+function fmtDate(v){if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleDateString('fr-FR');}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function request(path,options={}){const r=await fetch(API+path,{...options,headers:{...headers(),...(options.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok||d.success===false)throw new Error(d.error||('Erreur HTTP '+r.status));return d;}
+function subscriptionOf(u){return u.subscription||null;}
+async function searchUsers(){
+  $('message').textContent='Recherche…';$('usersTable').classList.add('hidden');
+  try{
+    const q=$('search').value.trim(); const d=await request('/users?limit=50'+(q?'&search='+encodeURIComponent(q):''));
+    $('usersBody').innerHTML='';
+    for(const u of d.users||[]){
+      const s=subscriptionOf(u); const tr=document.createElement('tr');tr.className='user';
+      tr.innerHTML=`<td><b>${esc(u.name||'Sans nom')}</b><br><span class="muted">${esc(u.status||'')}</span></td><td>${esc(u.phone||'—')}</td><td>${esc(u.email||'—')}</td><td>${esc(s?.plan||'—')}</td><td>${fmtDate(s?.expiresAt)}</td>`;
+      tr.onclick=()=>loadUser(u.id); $('usersBody').appendChild(tr);
+    }
+    $('usersTable').classList.remove('hidden');$('message').textContent=(d.users||[]).length+' utilisateur(s)';
+  }catch(e){$('message').innerHTML='<span class="error">'+esc(e.message)+'</span>';}
+}
+async function loadUser(id){
+  try{
+    const d=await request('/users/'+encodeURIComponent(id));selectedUserId=id;const u=d.user,s=u.subscription;
+    $('userDetail').innerHTML=`<div class="grid"><div><b>${esc(u.name||'Sans nom')}</b><div class="muted">${esc(u.phone||'')} ${u.email?'• '+esc(u.email):''}</div></div><div>Compte<br><span class="pill">${esc(u.status||'—')}</span></div><div>Abonnement<br><span class="pill">${esc(s?.plan||'Aucun')} / ${esc(s?.status||'—')}</span></div><div>Expiration<br><b>${fmtDate(s?.expiresAt)}</b></div></div>`;
+    if(s?.plan && ['BASIC','PRO','ENTERPRISE'].includes(s.plan))$('plan').value=s.plan;
+    $('detailCard').classList.remove('hidden');$('actionMessage').textContent='';
+    $('detailCard').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){$('message').innerHTML='<span class="error">'+esc(e.message)+'</span>';}
+}
+async function grant(){
+  if(!selectedUserId)return;
+  const body={plan:$('plan').value,type:$('type').value,durationDays:Number($('days').value),reason:$('reason').value.trim(),notes:$('notes').value.trim()||null};
+  if(!body.reason){$('actionMessage').innerHTML='<span class="error">Le motif est obligatoire.</span>';return;}
+  if(!confirm(`Confirmer ${body.plan} pour ${body.durationDays} jour(s) ?`))return;
+  $('grantBtn').disabled=true;
+  try{await request('/users/'+encodeURIComponent(selectedUserId)+'/subscription/grant',{method:'POST',body:JSON.stringify(body)});$('actionMessage').innerHTML='<span class="ok">Abonnement mis à jour avec succès.</span>';await loadUser(selectedUserId);await searchUsers();}
+  catch(e){$('actionMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';}finally{$('grantBtn').disabled=false;}
+}
+async function cancelSub(){
+  if(!selectedUserId)return;const reason=prompt("Motif de l'annulation :","Demande du client");if(!reason)return;if(!confirm("Confirmer l'annulation de l'abonnement ?"))return;
+  $('cancelBtn').disabled=true;
+  try{await request('/users/'+encodeURIComponent(selectedUserId)+'/subscription/cancel',{method:'POST',body:JSON.stringify({reason})});$('actionMessage').innerHTML='<span class="ok">Abonnement annulé.</span>';await loadUser(selectedUserId);await searchUsers();}
+  catch(e){$('actionMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';}finally{$('cancelBtn').disabled=false;}
+}
+$('save').onclick=()=>searchUsers();$('searchBtn').onclick=searchUsers;$('search').addEventListener('keydown',e=>{if(e.key==='Enter')searchUsers();});$('grantBtn').onclick=grant;$('cancelBtn').onclick=cancelSub;
+</script>
+</body></html>
