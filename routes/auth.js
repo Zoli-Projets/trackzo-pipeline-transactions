@@ -29,6 +29,41 @@ function publicDevice(device) {
   };
 }
 
+
+function uuidVersion(value) {
+  const match = String(value || "").trim().toLowerCase().match(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-([0-9a-f])[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  );
+  return match ? Number.parseInt(match[1], 16) : null;
+}
+
+async function cleanupLegacyReinstallDevice(userId, currentDevice) {
+  if (!currentDevice || uuidVersion(currentDevice.deviceUuid) !== 3) return;
+
+  const legacyDevices = await Device.findAll({
+    where: {
+      userId,
+      active: true,
+      id: { [Op.ne]: currentDevice.id }
+    }
+  });
+
+  const candidates = legacyDevices.filter((device) =>
+    uuidVersion(device.deviceUuid) === 4 &&
+    String(device.deviceName || "") === String(currentDevice.deviceName || "") &&
+    String(device.androidVersion || "") === String(currentDevice.androidVersion || "")
+  );
+
+  if (candidates.length !== 1) return;
+
+  const legacy = candidates[0];
+  await legacy.update({ active: false, authTokenHash: null });
+  await Session.update(
+    { revokedAt: new Date() },
+    { where: { deviceId: legacy.id, revokedAt: null } }
+  );
+}
+
 async function findUserByIdentifier(identifier) {
   const value = String(identifier || "").trim();
   if (!value) return null;
@@ -39,8 +74,9 @@ async function findUserByIdentifier(identifier) {
 }
 
 async function completeLogin(user, device) {
-  const { accessToken, expiresAt } = await issueSession(user.id, device.id);
   await device.update({ lastSeen: new Date() });
+  await cleanupLegacyReinstallDevice(user.id, device);
+  const { accessToken, expiresAt } = await issueSession(user.id, device.id);
   return { userId: user.id, accessToken, expiresAt };
 }
 

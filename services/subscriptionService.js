@@ -3,9 +3,9 @@ const Subscription = require("../models/Subscription");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 
 const PLAN_CONFIG = {
-  TRIAL: { durationDays: 7, maxDevices: 1 },
-  BASIC: { durationDays: 30, maxDevices: 1 },
-  PRO: { durationDays: 30, maxDevices: 3 },
+  TRIAL: { durationDays: 7, maxDevices: 5 },
+  BASIC: { durationDays: 30, maxDevices: 2 },
+  PRO: { durationDays: 30, maxDevices: 5 },
   ENTERPRISE: { durationDays: 365, maxDevices: 10 }
 };
 
@@ -25,6 +25,12 @@ function snapshot(subscription) {
 
 async function syncSubscriptionStatus(subscription, actor = "SYSTEM") {
   if (!subscription) return null;
+
+  const planConfig = PLAN_CONFIG[String(subscription.plan || "").toUpperCase()];
+  if (planConfig && Number(subscription.maxDevices) !== Number(planConfig.maxDevices)) {
+    await subscription.update({ maxDevices: planConfig.maxDevices });
+  }
+
   if (subscription.status === "ACTIVE" && new Date(subscription.expiresAt) <= new Date()) {
     const beforeState = snapshot(subscription);
     await subscription.update({ status: "EXPIRED" });
