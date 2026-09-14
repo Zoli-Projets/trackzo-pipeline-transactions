@@ -127,6 +127,94 @@ async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows) {
     });
 }
 
+
+async function formatCleanedSheet(sheets, spreadsheetId) {
+    const metadata = await sheets.spreadsheets.get({
+        spreadsheetId,
+        fields: "sheets.properties(sheetId,title,gridProperties.rowCount),sheets.bandedRanges(bandedRangeId,range)"
+    });
+
+    const cleanedSheet = (metadata.data.sheets || []).find(
+        item => item.properties?.title === "Nettoyé"
+    );
+
+    const sheetId = cleanedSheet?.properties?.sheetId;
+    if (sheetId === undefined || sheetId === null) return;
+
+    const rowCount = Math.max(
+        2,
+        Number(cleanedSheet.properties?.gridProperties?.rowCount || 1000)
+    );
+
+    const requests = [];
+
+    // On retire uniquement les bandes existantes de Nettoyé afin d'éviter
+    // plusieurs règles de couleurs superposées au fil des traitements.
+    for (const band of (cleanedSheet.bandedRanges || [])) {
+        if (band?.bandedRangeId != null) {
+            requests.push({ deleteBanding: { bandedRangeId: band.bandedRangeId } });
+        }
+    }
+
+    // Alternance visuelle stable sur les lignes de données A:G.
+    requests.push({
+        addBanding: {
+            bandedRange: {
+                range: {
+                    sheetId,
+                    startRowIndex: 1,
+                    endRowIndex: rowCount,
+                    startColumnIndex: 0,
+                    endColumnIndex: 7
+                },
+                rowProperties: {
+                    firstBandColor: { red: 0.91, green: 0.97, blue: 0.98 },
+                    secondBandColor: { red: 1, green: 1, blue: 1 }
+                }
+            }
+        }
+    });
+
+    // Lisibilité homogène avec les autres feuilles : police plus grande,
+    // alignement vertical central et retour automatique du texte.
+    requests.push({
+        repeatCell: {
+            range: {
+                sheetId,
+                startRowIndex: 1,
+                endRowIndex: rowCount,
+                startColumnIndex: 0,
+                endColumnIndex: 7
+            },
+            cell: {
+                userEnteredFormat: {
+                    textFormat: { fontSize: 11 },
+                    verticalAlignment: "MIDDLE"
+                }
+            },
+            fields: "userEnteredFormat.textFormat.fontSize,userEnteredFormat.verticalAlignment,userEnteredFormat.wrapStrategy"
+        }
+    });
+
+    requests.push({
+        updateDimensionProperties: {
+            range: {
+                sheetId,
+                dimension: "ROWS",
+                startIndex: 1,
+                endIndex: rowCount
+            },
+            properties: { pixelSize: 28 },
+            fields: "pixelSize"
+        }
+    });
+
+    await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests }
+    });
+}
+
 /**
  * Marquage en un seul batch afin de reduire les appels Google Sheets et les
  * risques de concurrence entre plusieurs executions proches du trigger.
@@ -242,6 +330,13 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     // retraiter au prochain trigger.
     await insertRowsAtTop(sheets, spreadsheetId, "Nettoyé", cleanRows);
     await insertRowsAtTop(sheets, spreadsheetId, "Alertes", alertRows);
+
+    // Nettoyé reçoit son format après insertion pour éviter les lignes
+    // uniformes/non formatées créées par insertDimension.
+    if (cleanRows.length > 0) {
+        await formatCleanedSheet(sheets, spreadsheetId);
+    }
+
     await markProcessed(sheets, spreadsheetId, processed);
 
     // Les statistiques sont regenerees par le meme passage du trigger, une fois

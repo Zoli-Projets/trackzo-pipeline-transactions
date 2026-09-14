@@ -206,6 +206,16 @@ function extractReference(message) {
 
     const patterns = [
         /\bID\s+Transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
+
+        // Certains SMS/UI ajoutent une ponctuation ou un lien entre "ID" et
+        // "Transaction", par exemple :
+        // ID (http://f.id/)Transaction: CO260910.1748.D25764
+        /\bID\b[^\r\n]{0,80}?Transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
+
+        // Référence structurée Orange Money / Mobile Money indépendante du
+        // libellé autour. Cela évite qu'une injection de lien casse l'extraction.
+        /\b([A-Z]{2}\d{6}\.\d{4}\.[A-Z0-9]{4,})\b/i,
+
         /\b(?:Trx\s*ID|TRX\s*ID|TRXID|TrxID|Trx)\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
         /\bNo\.?\s*(?:de\s+)?transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
         /\bID\s+(?:de\s+)?transaction\s*[:.]?\s*([0-9]{8,})/i,
