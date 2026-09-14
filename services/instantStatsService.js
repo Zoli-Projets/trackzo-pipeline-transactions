@@ -86,6 +86,56 @@ function normalizeOperator(operator) {
 
 
 // ======================================
+// CLE DATE/HEURE TRANSACTION
+// ======================================
+
+function transactionDateTimeKey(transaction) {
+
+    const rawDate = String(transaction?.date || "").trim();
+    const rawTime = String(transaction?.time || "").trim();
+
+    // Format Trackzo principal : dd-MM-yyyy / HH:mm:ss
+    const dateMatch = rawDate.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/);
+    const timeMatch = rawTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+
+    if (dateMatch) {
+        const day = Number(dateMatch[1]);
+        const month = Number(dateMatch[2]);
+        const year = Number(dateMatch[3]);
+        const hour = timeMatch ? Number(timeMatch[1]) : 0;
+        const minute = timeMatch ? Number(timeMatch[2]) : 0;
+        const second = timeMatch && timeMatch[3] ? Number(timeMatch[3]) : 0;
+
+        return Date.UTC(year, month - 1, day, hour, minute, second);
+    }
+
+    // Compatibilité avec une éventuelle date ISO yyyy-MM-dd.
+    const isoMatch = rawDate.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (isoMatch) {
+        const year = Number(isoMatch[1]);
+        const month = Number(isoMatch[2]);
+        const day = Number(isoMatch[3]);
+        const hour = timeMatch ? Number(timeMatch[1]) : 0;
+        const minute = timeMatch ? Number(timeMatch[2]) : 0;
+        const second = timeMatch && timeMatch[3] ? Number(timeMatch[3]) : 0;
+
+        return Date.UTC(year, month - 1, day, hour, minute, second);
+    }
+
+    // L'onglet Aujourd'hui contient normalement une seule date.
+    // Si la date est illisible, l'heure reste suffisante pour conserver
+    // un ordre utile sans éliminer la transaction.
+    if (timeMatch) {
+        return (Number(timeMatch[1]) * 3600) +
+            (Number(timeMatch[2]) * 60) +
+            (timeMatch[3] ? Number(timeMatch[3]) : 0);
+    }
+
+    return 0;
+}
+
+
+// ======================================
 // GENERER STATS
 // ======================================
 
@@ -243,10 +293,25 @@ async function generateInstantStats(
     // L'ancienne limite `.slice(-10)` faisait croire que le scroll était
     // bloqué alors que les lignes au-delà des 10 dernières n'étaient jamais
     // envoyées par l'API.
+    // Toujours trier explicitement par date + heure.
+    // Ne jamais dépendre de l'ordre physique des lignes Google Sheets :
+    // certains anciens chemins ajoutaient en bas, les nouveaux insèrent en haut.
+    // Aucune limite artificielle : toutes les transactions du jour sont renvoyées.
     const recentTransactions =
         transactions
             .slice()
-            .reverse();
+            .sort((a, b) => {
+                const aKey = transactionDateTimeKey(a);
+                const bKey = transactionDateTimeKey(b);
+
+                if (aKey !== bKey) {
+                    return bKey - aKey;
+                }
+
+                // Tri stable et déterministe si deux opérations ont exactement
+                // la même seconde. On conserve leur ordre d'origine.
+                return 0;
+            });
 
 
     return {
