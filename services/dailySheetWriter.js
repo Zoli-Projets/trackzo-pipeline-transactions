@@ -3,6 +3,25 @@ const { google } = require("googleapis");
 const TECH_SHEET_NAME = "_Trackzo_Technique";
 const RAW_SHEET_NAME = "Transactions brutes";
 
+const SHEET_METADATA_CACHE_TTL_MS = 10 * 60 * 1000;
+const sheetMetadataCache = new Map();
+
+function rememberSheetProperties(spreadsheetId, properties) {
+    let entry = sheetMetadataCache.get(spreadsheetId);
+    if (!entry || (Date.now() - entry.loadedAt) > SHEET_METADATA_CACHE_TTL_MS) {
+        entry = { loadedAt: Date.now(), byTitle: new Map() };
+        sheetMetadataCache.set(spreadsheetId, entry);
+    }
+    if (properties?.title) {
+        entry.byTitle.set(properties.title, properties);
+    }
+}
+
+function invalidateSheetMetadata(spreadsheetId) {
+    sheetMetadataCache.delete(spreadsheetId);
+}
+
+
 async function getSheetsClient(refreshToken) {
     const auth = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
@@ -14,14 +33,34 @@ async function getSheetsClient(refreshToken) {
 }
 
 async function getSheetProperties(sheets, spreadsheetId, title) {
+    const cached = sheetMetadataCache.get(spreadsheetId);
+    if (
+        cached &&
+        (Date.now() - cached.loadedAt) <= SHEET_METADATA_CACHE_TTL_MS &&
+        cached.byTitle.has(title)
+    ) {
+        return cached.byTitle.get(title);
+    }
+
     const response = await sheets.spreadsheets.get({
         spreadsheetId,
         fields: "sheets.properties(sheetId,title,hidden)"
     });
 
-    return (response.data.sheets || [])
-        .map(s => s.properties)
-        .find(p => p && p.title === title) || null;
+    const byTitle = new Map();
+    for (const sheet of (response.data.sheets || [])) {
+        const properties = sheet?.properties;
+        if (properties?.title) {
+            byTitle.set(properties.title, properties);
+        }
+    }
+
+    sheetMetadataCache.set(spreadsheetId, {
+        loadedAt: Date.now(),
+        byTitle
+    });
+
+    return byTitle.get(title) || null;
 }
 
 async function ensureTechnicalSheet(sheets, spreadsheetId) {
@@ -40,6 +79,8 @@ async function ensureTechnicalSheet(sheets, spreadsheetId) {
                     }]
                 }
             });
+            tech = { ...tech, hidden: true };
+            rememberSheetProperties(spreadsheetId, tech);
         }
         return tech.sheetId;
     }
@@ -61,10 +102,17 @@ async function ensureTechnicalSheet(sheets, spreadsheetId) {
         }
     });
 
-    const techSheetId = created.data.replies?.[0]?.addSheet?.properties?.sheetId;
+    const techProperties = created.data.replies?.[0]?.addSheet?.properties;
+    const techSheetId = techProperties?.sheetId;
     if (techSheetId == null) {
         throw new Error("Impossible de créer la feuille technique Trackzo");
     }
+
+    rememberSheetProperties(spreadsheetId, {
+        ...techProperties,
+        title: TECH_SHEET_NAME,
+        hidden: true
+    });
 
     await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -267,5 +315,6 @@ module.exports = {
     readRawMessages,
     appendRows,
     updateStatus,
-    readCleanReferences
+    readCleanReferences,
+    invalidateSheetMetadata
 };

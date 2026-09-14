@@ -18,6 +18,31 @@ const {
     require("./dailySheetDataService");
 
 
+const STATS_CACHE_TTL_MS = 15000;
+const STALE_STATS_MAX_AGE_MS = 5 * 60 * 1000;
+const statsCache = new Map();
+const statsInFlight = new Map();
+
+function isGoogleQuotaError(error) {
+    const status =
+        error?.code ||
+        error?.status ||
+        error?.response?.status ||
+        error?.response?.data?.error?.code;
+
+    const message = String(
+        error?.message ||
+        error?.response?.data?.error?.message ||
+        ""
+    ).toLowerCase();
+
+    return status === 429 ||
+        message.includes("quota exceeded") ||
+        message.includes("rate limit") ||
+        message.includes("read requests per minute");
+}
+
+
 // ======================================
 // TYPES
 // ======================================
@@ -139,7 +164,7 @@ function transactionDateTimeKey(transaction) {
 // GENERER STATS
 // ======================================
 
-async function generateInstantStats(
+async function generateInstantStatsUncached(
     userId
 ) {
 
@@ -354,6 +379,65 @@ async function generateInstantStats(
 }
 
 
+async function generateInstantStats(userId) {
+    const cacheKey = String(userId);
+    const cached = statsCache.get(cacheKey);
+    const now = Date.now();
+
+    if (cached && (now - cached.createdAt) <= STATS_CACHE_TTL_MS) {
+        return {
+            ...cached.value,
+            cache: true
+        };
+    }
+
+    const existingRun = statsInFlight.get(cacheKey);
+    if (existingRun) {
+        return existingRun;
+    }
+
+    const run = (async () => {
+        try {
+            const value = await generateInstantStatsUncached(userId);
+            statsCache.set(cacheKey, {
+                createdAt: Date.now(),
+                value
+            });
+            return value;
+        } catch (error) {
+            const fallback = statsCache.get(cacheKey);
+
+            if (
+                fallback &&
+                isGoogleQuotaError(error) &&
+                (Date.now() - fallback.createdAt) <= STALE_STATS_MAX_AGE_MS
+            ) {
+                console.warn("⚠️ Quota Google Sheets — stats en cache servies", {
+                    userId,
+                    ageMs: Date.now() - fallback.createdAt
+                });
+
+                return {
+                    ...fallback.value,
+                    cache: true,
+                    stale: true
+                };
+            }
+
+            throw error;
+        } finally {
+            statsInFlight.delete(cacheKey);
+        }
+    })();
+
+    statsInFlight.set(cacheKey, run);
+    return run;
+}
+
+function invalidateInstantStatsCache(userId) {
+    statsCache.delete(String(userId));
+}
+
 // ======================================
 // CREER TABLEAU
 // ======================================
@@ -486,6 +570,7 @@ function createTable(
 
 module.exports = {
 
-    generateInstantStats
+    generateInstantStats,
+    invalidateInstantStatsCache
 
 };
