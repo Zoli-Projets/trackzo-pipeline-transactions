@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Politique de confidentialité — Trackzo</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f7fa;color:#172033;margin:0;line-height:1.65}
+main{max-width:820px;margin:36px auto;padding:0 18px 48px}
+article{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:28px;box-shadow:0 2px 12px rgba(0,0,0,.04)}
+h1{line-height:1.2}h2{margin-top:28px}a{color:#1457d9}.small{color:#64748b;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<article>
+<h1>Politique de confidentialité de Trackzo</h1>
+<p class="small">Dernière mise à jour : 14 septembre 2026</p>
+
+<p>La présente politique explique comment l'application Trackzo accède à certaines données, les utilise, les transmet, les conserve et permet leur suppression. Trackzo est une application de suivi et d'organisation de transactions Mobile Money à partir des notifications financières reçues par SMS.</p>
+
+<h2>1. Données traitées</h2>
+<p>Selon les fonctionnalités utilisées, Trackzo peut traiter : le nom, le numéro de téléphone, l'adresse e-mail, l'identifiant du compte Trackzo, un identifiant technique d'appareil, les informations d'abonnement, les informations de connexion au compte Google, ainsi que les informations financières contenues dans les SMS de transaction pertinents (par exemple montant, date, heure, type d'opération, statut, référence et contenu du message nécessaire à l'analyse).</p>
+
+<h2>2. Accès aux SMS</h2>
+<p>Avec l'autorisation de l'utilisateur, Trackzo utilise les autorisations Android READ_SMS et RECEIVE_SMS pour détecter les notifications de transactions Mobile Money, y compris lorsque l'application n'est pas au premier plan.</p>
+<p>Avant la synchronisation, Trackzo applique une classification locale. Les SMS identifiés comme financiers ou probablement financiers peuvent être transmis au serveur Trackzo pour analyser et enregistrer la transaction. Les messages clairement non financiers, notamment les messages personnels, codes OTP ou de sécurité, publicités et promotions, sont filtrés sur l'appareil et ne sont pas transmis au serveur dans le cadre de cette fonctionnalité.</p>
+<p>Trackzo n'utilise pas le contenu des SMS à des fins publicitaires, de ciblage publicitaire ou de vente de données.</p>
+
+<h2>3. Utilisation des données</h2>
+<p>Les données sont utilisées pour fournir les fonctionnalités demandées : authentifier le compte, gérer les appareils et l'abonnement, détecter et classer les opérations financières, synchroniser les transactions, produire les statistiques de l'application, créer les feuilles journalières et permettre l'assistance technique.</p>
+
+<h2>4. Google Drive et Google Sheets</h2>
+<p>Lorsque l'utilisateur connecte son compte Google, Trackzo utilise les API Google autorisées afin de créer et mettre à jour les fichiers Google Sheets nécessaires au service. Les transactions synchronisées peuvent être enregistrées dans les fichiers Google Sheets associés au compte Google de l'utilisateur. Ces fichiers restent sous le contrôle du compte Google de l'utilisateur.</p>
+
+<h2>5. Prestataires techniques et transferts</h2>
+<p>Les données nécessaires au fonctionnement peuvent être traitées par les prestataires techniques utilisés pour exploiter Trackzo, notamment l'infrastructure d'hébergement du backend et de la base de données, ainsi que Google pour les fonctionnalités Google Drive/Sheets choisies par l'utilisateur. Ces traitements sont limités à la fourniture du service et aux obligations légales applicables.</p>
+
+<h2>6. Sécurité</h2>
+<p>Trackzo utilise des connexions HTTPS/TLS pour les échanges réseau en production et limite l'accès aux données aux besoins fonctionnels du service. Des mécanismes techniques sont également utilisés pour éviter les doublons de transactions et limiter la transmission de SMS clairement non financiers.</p>
+
+<h2>7. Conservation</h2>
+<p>Les données de compte et de configuration sont conservées tant que le compte Trackzo est actif ou aussi longtemps que nécessaire pour fournir le service. Trackzo n'a pas vocation à conserver dans PostgreSQL l'historique complet des SMS de transaction : l'historique de transactions est principalement conservé dans les Google Sheets de l'utilisateur. Des données techniques minimales peuvent être conservées temporairement pour la synchronisation, la sécurité, la prévention des doublons et le fonctionnement du service.</p>
+
+<h2>8. Suppression du compte et des données</h2>
+<p>Un utilisateur connecté peut demander la suppression de son compte depuis <strong>Paramètres &gt; Supprimer mon compte</strong>. Une demande peut également être initiée depuis la page publique <a href="/delete-account.html">Supprimer mon compte Trackzo</a>.</p>
+<p>La suppression du compte supprime les données associées conservées par Trackzo, sous réserve des informations dont la conservation est imposée par une obligation légale. Les fichiers Google Sheets déjà présents dans le Google Drive personnel de l'utilisateur ne sont pas supprimés automatiquement : ils restent sous son contrôle et peuvent être supprimés directement depuis Google Drive.</p>
+
+<h2>9. Choix et autorisations</h2>
+<p>L'utilisateur peut refuser l'autorisation SMS. Dans ce cas, la détection automatique des transactions par SMS ne fonctionne pas, mais le refus de cette permission ne doit pas être interprété comme un consentement. Les autorisations Android peuvent également être modifiées dans les réglages du téléphone.</p>
+
+<h2>10. Contact confidentialité</h2>
+<p>Pour toute question relative à la confidentialité ou aux données Trackzo, l'utilisateur peut contacter le support Trackzo via WhatsApp au <a href="https://wa.me/2250504189940">+225 05 04 18 99 40</a>.</p>
+
+<h2>11. Responsable / application</h2>
+<p>Application : <strong>Trackzo</strong>. Si le nom juridique du développeur affiché sur Google Play diffère de « Trackzo », cette page doit être mise à jour avant publication afin d'indiquer exactement l'entité responsable figurant sur la fiche Google Play.</p>
+
+</article>
+</main>
+</body>
+</html>
