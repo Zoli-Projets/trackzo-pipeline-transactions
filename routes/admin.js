@@ -9,6 +9,8 @@ const Subscription = require("../models/Subscription");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 const Payment = require("../models/Payment");
 const Session = require("../models/Session");
+const AccountDeletionRequest = require("../models/AccountDeletionRequest");
+const { deleteUserAccount } = require("../services/accountDeletionService");
 const { grantSubscription, cancelSubscription, getCurrentSubscription } = require("../services/subscriptionService");
 const { revokeUserSessions } = require("../services/sessionService");
 
@@ -138,6 +140,87 @@ router.post("/users/:userId/subscription/cancel", async (req, res) => {
     return res.json({ success: true, subscription });
   } catch (error) {
     return res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+
+router.get("/account-deletion-requests", async (req, res) => {
+  try {
+    const status = String(req.query.status || "PENDING").toUpperCase();
+    const where = ["PENDING", "COMPLETED", "REJECTED"].includes(status)
+      ? { status }
+      : {};
+    const requests = await AccountDeletionRequest.findAll({
+      where,
+      order: [["createdAt", "DESC"]],
+      limit: 200
+    });
+    return res.json({ success: true, requests });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/account-deletion-requests/:requestId/complete", async (req, res) => {
+  try {
+    const request = await AccountDeletionRequest.findByPk(req.params.requestId);
+    if (!request) {
+      return res.status(404).json({ success: false, error: "Demande introuvable" });
+    }
+    if (request.status !== "PENDING") {
+      return res.status(409).json({ success: false, error: "Cette demande a déjà été traitée" });
+    }
+
+    const identifier = String(request.identifier || "").trim();
+    let user = null;
+    if (identifier.includes("@")) {
+      user = await User.findOne({
+        where: where(fn("LOWER", col("email")), identifier.toLowerCase())
+      });
+    } else {
+      user = await User.findOne({ where: { phone: identifier } });
+    }
+
+    if (!user) {
+      await request.update({
+        status: "COMPLETED",
+        completedAt: new Date(),
+        notes: "Aucun compte actif correspondant au moment du traitement."
+      });
+      return res.json({
+        success: true,
+        message: "Aucun compte actif correspondant; demande clôturée."
+      });
+    }
+
+    await deleteUserAccount(user.id);
+    await request.update({
+      status: "COMPLETED",
+      completedAt: new Date(),
+      notes: String(req.body.notes || "Suppression validée par l'administrateur")
+    });
+
+    return res.json({ success: true, message: "Compte supprimé et demande clôturée." });
+  } catch (error) {
+    console.error("Admin suppression compte:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/account-deletion-requests/:requestId/reject", async (req, res) => {
+  try {
+    const request = await AccountDeletionRequest.findByPk(req.params.requestId);
+    if (!request) {
+      return res.status(404).json({ success: false, error: "Demande introuvable" });
+    }
+    await request.update({
+      status: "REJECTED",
+      completedAt: new Date(),
+      notes: String(req.body.notes || "Identité non vérifiée")
+    });
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

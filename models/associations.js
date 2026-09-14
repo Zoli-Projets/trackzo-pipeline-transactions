@@ -9,6 +9,7 @@ const Session = require("./Session");
 const VerificationCode = require("./VerificationCode");
 const Payment = require("./Payment");
 const SubscriptionEvent = require("./SubscriptionEvent");
+const AccountDeletionRequest = require("./AccountDeletionRequest");
 
 User.hasOne(GoogleAccount, { foreignKey: "userId", as: "googleAccount", onDelete: "CASCADE" });
 GoogleAccount.belongsTo(User, { foreignKey: "userId", as: "user" });
@@ -48,5 +49,5 @@ SubscriptionEvent.belongsTo(Subscription, { foreignKey: "subscriptionId", as: "s
 
 module.exports = {
   User, Device, Subscription, UserSettings, Template, GoogleAccount, DailySheet,
-  Session, VerificationCode, Payment, SubscriptionEvent
+  Session, VerificationCode, Payment, SubscriptionEvent, AccountDeletionRequest
 };

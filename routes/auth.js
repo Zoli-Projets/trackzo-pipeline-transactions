@@ -10,6 +10,8 @@ const { requireAuth } = require("../middleware/auth");
 const { issueSession } = require("../services/sessionService");
 const { createVerification, consumeVerification } = require("../services/verificationService");
 const { getCurrentSubscription } = require("../services/subscriptionService");
+const AccountDeletionRequest = require("../models/AccountDeletionRequest");
+const { deleteUserAccount } = require("../services/accountDeletionService");
 
 function normalizeEmail(value) {
   return value ? String(value).trim().toLowerCase() : null;
@@ -115,6 +117,58 @@ async function authorizeNewDeviceWithoutVerification(user, {
 
   return completeLogin(user, device);
 }
+
+
+router.post("/account-deletion/request", async (req, res) => {
+  try {
+    const identifier = String(req.body.identifier || "").trim();
+    const contact = String(req.body.contact || "").trim();
+
+    if (!identifier) {
+      return res.status(400).json({
+        success: false,
+        error: "Téléphone ou email du compte obligatoire"
+      });
+    }
+
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const existing = await AccountDeletionRequest.findOne({
+      where: {
+        identifier,
+        status: "PENDING",
+        createdAt: { [Op.gte]: since }
+      },
+      order: [["createdAt", "DESC"]]
+    });
+
+    if (existing) {
+      return res.json({
+        success: true,
+        requestId: existing.id,
+        message: "Une demande de suppression est déjà en attente."
+      });
+    }
+
+    const request = await AccountDeletionRequest.create({
+      identifier,
+      contact: contact || null,
+      status: "PENDING",
+      source: "WEB"
+    });
+
+    return res.status(201).json({
+      success: true,
+      requestId: request.id,
+      message: "Demande de suppression enregistrée. Trackzo vérifiera l'identité avant suppression."
+    });
+  } catch (error) {
+    console.error("Demande suppression compte:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Impossible d'enregistrer la demande"
+    });
+  }
+});
 
 router.post("/register", async (req, res) => {
   try {
@@ -444,6 +498,26 @@ router.post("/devices/:deviceId/deactivate", requireAuth, async (req, res) => {
   await device.update({ active: false, authTokenHash: null });
   await Session.update({ revokedAt: new Date() }, { where: { deviceId: device.id, revokedAt: null } });
   return res.json({ success: true });
+});
+
+
+router.delete("/me", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await deleteUserAccount(userId);
+
+    return res.json({
+      success: true,
+      message: "Compte Trackzo supprimé."
+    });
+  } catch (error) {
+    console.error("Suppression compte:", error);
+    const status = error.code === "USER_NOT_FOUND" ? 404 : 500;
+    return res.status(status).json({
+      success: false,
+      error: error.message || "Impossible de supprimer le compte"
+    });
+  }
 });
 
 router.post("/logout", requireAuth, async (req, res) => {
