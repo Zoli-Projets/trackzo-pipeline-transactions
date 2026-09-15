@@ -121,6 +121,58 @@ async function readRawRows(sheets, spreadsheetId) {
         );
 }
 
+async function readExistingSemanticTransactions(sheets, spreadsheetId) {
+    const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "'Nettoyé'!A:G",
+        valueRenderOption: "FORMATTED_VALUE"
+    });
+
+    const map = new Map();
+    const rows = response.data.values || [];
+
+    rows.slice(1).forEach((row, index) => {
+        const message = String(row[6] || "").trim();
+        if (!message) return;
+
+        try {
+            const result = classifyMessage(message);
+            const key = semanticTransactionKey(message, result);
+            if (!key) return;
+
+            const candidate = {
+                rowNumber: index + 2,
+                score: transactionCompletenessScore(message, result),
+                reference: String(row[5] || result.reference || "").trim()
+            };
+
+            const previous = map.get(key);
+            if (!previous || candidate.score > previous.score) {
+                map.set(key, candidate);
+            }
+        } catch (_) {
+            // Une ancienne ligne illisible ne doit jamais bloquer le traitement.
+        }
+    });
+
+    return map;
+}
+
+async function updateExistingCleanRows(sheets, spreadsheetId, updates) {
+    if (!updates.length) return;
+
+    await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+            valueInputOption: "RAW",
+            data: updates.map(item => ({
+                range: `'Nettoyé'!A${item.rowNumber}:G${item.rowNumber}`,
+                values: [item.row.map(singleLineCell)]
+            }))
+        }
+    });
+}
+
 async function readExistingReferences(sheets, spreadsheetId) {
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
@@ -236,10 +288,13 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     }
 
     const existingReferences = await readExistingReferences(sheets, spreadsheetId);
+    const existingSemanticTransactions =
+        await readExistingSemanticTransactions(sheets, spreadsheetId);
     const cleanRows = [];
+    const cleanRowUpdates = [];
     const alertRows = [];
     const processed = [];
-    const semanticSelections = new Map();
+    const semanticSelections = new Map(existingSemanticTransactions);
     let errors = 0;
 
     for (const raw of rawRows) {
@@ -287,14 +342,24 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                 // Une référence déjà présente signifie que cette opération est déjà
                 // enregistrée. Elle est traitée mais ne devient pas une 2e transaction.
             } else if (semanticKey && semanticSelections.has(semanticKey)) {
-                // Deux notifications opérateur décrivent la même opération seulement
-                // si montant + opérateur + type + numéro(s) + HH:mm:ss sont identiques.
+                // Fonctionne aussi si la première notification a été traitée lors
+                // d'une exécution backend précédente : la feuille Nettoyé est la
+                // mémoire persistante de la déduplication sémantique.
                 const selected = semanticSelections.get(semanticKey);
                 const candidateScore = transactionCompletenessScore(raw.message, result);
 
                 if (candidateScore > selected.score) {
-                    // Remplacer la notification courte par la plus complète.
-                    cleanRows[selected.cleanIndex] = row;
+                    if (selected.cleanIndex !== undefined) {
+                        // Le doublon est dans le lot courant : remplacer avant insertion.
+                        cleanRows[selected.cleanIndex] = row;
+                    } else if (selected.rowNumber) {
+                        // Le doublon est déjà dans Nettoyé : remplacer la ligne existante
+                        // par la notification la plus complète, sans créer de nouvelle ligne.
+                        cleanRowUpdates.push({
+                            rowNumber: selected.rowNumber,
+                            row
+                        });
+                    }
 
                     if (selected.reference) {
                         existingReferences.delete(selected.reference.toUpperCase());
@@ -305,12 +370,12 @@ async function processDailySheet(refreshToken, spreadsheetId) {
 
                     semanticSelections.set(semanticKey, {
                         cleanIndex: selected.cleanIndex,
+                        rowNumber: selected.rowNumber,
                         score: candidateScore,
                         reference
                     });
                 }
-                // Le doublon non retenu n'est ni une transaction supplémentaire,
-                // ni une alerte : il est simplement marqué traité.
+                // Le SMS non retenu est marqué traité, sans 2e transaction/statistique.
             } else {
                 const cleanIndex = cleanRows.length;
                 cleanRows.push(row);
@@ -353,6 +418,13 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     // L'ordre est volontaire : les lignes de sortie sont ecrites avant que la
     // source ne soit marquee OK. En cas d'erreur d'ecriture, la source reste a
     // retraiter au prochain trigger.
+    // D'abord améliorer, si nécessaire, une ancienne transaction déjà présente.
+    // Ensuite seulement insérer les nouvelles transactions.
+    await updateExistingCleanRows(
+        sheets,
+        spreadsheetId,
+        cleanRowUpdates
+    );
     await insertRowsAtTop(sheets, spreadsheetId, "Nettoyé", cleanRows);
     await insertRowsAtTop(sheets, spreadsheetId, "Alertes", alertRows);
     await markProcessed(sheets, spreadsheetId, processed);

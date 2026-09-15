@@ -38,7 +38,7 @@
     </div>
     <div id="message" class="muted" style="margin-top:10px"></div>
     <div style="overflow:auto"><table id="usersTable" class="hidden">
-      <thead><tr><th>Utilisateur</th><th>Téléphone</th><th>E-mail</th><th>Plan</th><th>Expiration</th></tr></thead>
+      <thead><tr><th>Utilisateur</th><th>Compte</th><th>Abonnement</th><th>Téléphone</th><th>E-mail</th><th>Plan</th><th>Expiration</th></tr></thead>
       <tbody id="usersBody"></tbody>
     </table></div>
   </section>
@@ -78,7 +78,7 @@ async function searchUsers(){
     $('usersBody').innerHTML='';
     for(const u of d.users||[]){
       const s=subscriptionOf(u); const tr=document.createElement('tr');tr.className='user';
-      tr.innerHTML=`<td><b>${esc(u.name||'Sans nom')}</b><br><span class="muted">${esc(u.status||'')}</span></td><td>${esc(u.phone||'—')}</td><td>${esc(u.email||'—')}</td><td>${esc(s?.plan||'—')}</td><td>${fmtDate(s?.expiresAt)}</td>`;
+      tr.innerHTML=`<td><b>${esc(u.name||'Sans nom')}</b></td><td><span class="pill">${esc(u.status||'—')}</span></td><td><span class="pill">${esc(u.subscriptionStatus||s?.status||'NONE')}</span></td><td>${esc(u.phone||'—')}</td><td>${esc(u.email||'—')}</td><td>${esc(s?.plan||'—')}</td><td>${fmtDate(s?.expiresAt)}</td>`;
       tr.onclick=()=>loadUser(u.id); $('usersBody').appendChild(tr);
     }
     $('usersTable').classList.remove('hidden');$('message').textContent=(d.users||[]).length+' utilisateur(s)';
