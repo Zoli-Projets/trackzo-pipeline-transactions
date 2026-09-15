@@ -45,7 +45,15 @@ router.get("/users", async (req, res) => {
       distinct: true
     });
 
-    return res.json({ success: true, count: result.count, users: result.rows });
+    const users = [];
+    for (const user of result.rows) {
+      const subscription = await getCurrentSubscription(user.id);
+      const item = user.toJSON();
+      item.subscription = subscription ? subscription.toJSON() : null;
+      item.subscriptionStatus = subscription?.status || "NONE";
+      users.push(item);
+    }
+    return res.json({ success: true, count: result.count, users });
   } catch (error) {
     console.error("Admin list users:", error);
     return res.status(500).json({ success: false, error: error.message });
@@ -62,9 +70,11 @@ router.get("/users/:userId", async (req, res) => {
       ]
     });
     if (!user) return res.status(404).json({ success: false, error: "Utilisateur introuvable" });
-    await getCurrentSubscription(user.id);
+    const subscription = await getCurrentSubscription(user.id);
+    const userJson = user.toJSON();
+    userJson.subscription = subscription ? subscription.toJSON() : null;
     const events = await SubscriptionEvent.findAll({ where: { userId: user.id }, order: [["createdAt", "DESC"]], limit: 100 });
-    return res.json({ success: true, user, subscriptionEvents: events });
+    return res.json({ success: true, user: userJson, subscriptionEvents: events });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }

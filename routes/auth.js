@@ -118,6 +118,23 @@ function deviceLimitMessage(maxDevices) {
   return `Limite de ${max} ${max === 1 ? "appareil" : "appareils"} atteinte`;
 }
 
+async function buildDeviceActivity(userId, devices) {
+  const sessions = await Session.findAll({ where: { userId }, order: [["createdAt", "DESC"]] });
+  const now = new Date();
+  return devices.map((device) => {
+    const ds = sessions.filter(x => String(x.deviceId) === String(device.id));
+    const live = ds.find(x => !x.revokedAt && x.expiresAt && new Date(x.expiresAt) > now);
+    const lastLogin = ds[0] || null;
+    const lastLogout = ds.find(x => x.revokedAt) || null;
+    return {
+      ...publicDevice(device),
+      active: Boolean(device.active && live),
+      lastLoginAt: lastLogin?.createdAt || null,
+      lastLogoutAt: lastLogout?.revokedAt || null
+    };
+  });
+}
+
 async function authorizeNewDeviceWithoutVerification(user, {
   deviceUuid,
   deviceName,
@@ -455,7 +472,7 @@ router.get("/me", requireAuth, async (req, res) => {
       status: req.user.status
     },
     subscription,
-    devices: devices.map(publicDevice),
+    devices: await buildDeviceActivity(req.user.id, devices),
     currentDeviceId: req.device.id
   });
 });
