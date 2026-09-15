@@ -15,14 +15,31 @@ function singleLineCell(value) {
         .trim();
 }
 
+function extractTransactionClock(message) {
+    const text = singleLineCell(message);
+
+    // Heure de l'opération contenue dans le SMS. La seconde fait partie
+    // de l'identité de la transaction : 11:24:20 != 11:24:21.
+    const matches = [...text.matchAll(/\b([01]\d|2[0-3]):([0-5]\d):([0-5]\d)\b/g)];
+    if (!matches.length) return "";
+
+    // Dans les notifications Mobile Money usuelles, l'heure de transaction
+    // est la première heure HH:mm:ss présente dans le message.
+    return matches[0][0];
+}
+
 function semanticTransactionKey(message, result) {
     const text = singleLineCell(message)
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
 
-    // Données stables d'une opération : montant + opérateur + type + bénéficiaire.
-    // L'ID, le solde et le format de date peuvent différer entre deux notifications.
+    const transactionClock = extractTransactionClock(message);
+    if (!transactionClock) {
+        // Pas de déduplication sémantique agressive sans heure à la seconde.
+        return "";
+    }
+
     const phones = [...text.matchAll(/\b(?:225)?0[157]\d{8}\b/g)]
         .map(m => m[0].replace(/^225/, ""))
         .sort()
@@ -32,19 +49,36 @@ function semanticTransactionKey(message, result) {
     const operator = String(result?.operator || "");
     const type = String(result?.type || "");
 
-    let core = text
-        .replace(/\b(?:id\s*transaction|transaction\s*id|transactionid|ref(?:erence)?)\s*[:#.-]?\s*[a-z0-9.-]+\b/gi, " ")
-        .replace(/\b(?:votre\s+)?(?:nouveau\s+)?solde[^.]*\.?/gi, " ")
-        .replace(/\ble\s+(?:\d{2}[-/]\d{2}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s+\d{2}:\d{2}:\d{2}\b/gi, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-    // Pour les doubles notifications "Vous avez envoyé...", les éléments
-    // déterminants sont montant/opérateur/type/numéro destinataire.
-    if (/vous avez envoye|vous avez envoyé/.test(core) && amount > 0 && phones) {
-        return `send|${amount}|${operator}|${type}|${phones}`;
+    if (
+        /vous avez envoye|vous avez envoyé/.test(text) &&
+        amount > 0 &&
+        phones &&
+        operator &&
+        type
+    ) {
+        return `send|${amount}|${operator}|${type}|${phones}|${transactionClock}`;
     }
+
     return "";
+}
+
+function transactionCompletenessScore(message, result) {
+    const text = singleLineCell(message);
+    let score = 0;
+
+    // Une référence/ID est le signal le plus important.
+    if (result?.reference) score += 1000;
+
+    // Puis les informations utiles supplémentaires.
+    if (/\b(?:nouveau\s+)?solde\b/i.test(text)) score += 120;
+    if (/\bcommission\b/i.test(text)) score += 80;
+    if (/\b(?:ref(?:erence)?|transaction\s*id|transactionid|id\s*transaction)\b/i.test(text)) {
+        score += 40;
+    }
+
+    // À égalité, conserver le SMS qui contient le plus d'information.
+    score += Math.min(text.length, 500) / 1000;
+    return score;
 }
 
 async function getSheetsClient(refreshToken) {
@@ -205,7 +239,7 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     const cleanRows = [];
     const alertRows = [];
     const processed = [];
-    const semanticKeys = new Set();
+    const semanticSelections = new Map();
     let errors = 0;
 
     for (const raw of rawRows) {
@@ -246,18 +280,47 @@ async function processDailySheet(refreshToken, spreadsheetId) {
             const duplicateByReference =
                 Boolean(reference) &&
                 existingReferences.has(normalizedReference);
-            const duplicateByOperatorNotification =
-                Boolean(semanticKey) &&
-                semanticKeys.has(semanticKey);
-            const duplicate = duplicateByReference || duplicateByOperatorNotification;
 
-            if (nonTransaction || insufficient || duplicate) {
+            if (nonTransaction || insufficient) {
                 alertRows.push(row);
+            } else if (duplicateByReference) {
+                // Une référence déjà présente signifie que cette opération est déjà
+                // enregistrée. Elle est traitée mais ne devient pas une 2e transaction.
+            } else if (semanticKey && semanticSelections.has(semanticKey)) {
+                // Deux notifications opérateur décrivent la même opération seulement
+                // si montant + opérateur + type + numéro(s) + HH:mm:ss sont identiques.
+                const selected = semanticSelections.get(semanticKey);
+                const candidateScore = transactionCompletenessScore(raw.message, result);
+
+                if (candidateScore > selected.score) {
+                    // Remplacer la notification courte par la plus complète.
+                    cleanRows[selected.cleanIndex] = row;
+
+                    if (selected.reference) {
+                        existingReferences.delete(selected.reference.toUpperCase());
+                    }
+                    if (reference) {
+                        existingReferences.add(normalizedReference);
+                    }
+
+                    semanticSelections.set(semanticKey, {
+                        cleanIndex: selected.cleanIndex,
+                        score: candidateScore,
+                        reference
+                    });
+                }
+                // Le doublon non retenu n'est ni une transaction supplémentaire,
+                // ni une alerte : il est simplement marqué traité.
             } else {
+                const cleanIndex = cleanRows.length;
                 cleanRows.push(row);
 
                 if (semanticKey) {
-                    semanticKeys.add(semanticKey);
+                    semanticSelections.set(semanticKey, {
+                        cleanIndex,
+                        score: transactionCompletenessScore(raw.message, result),
+                        reference
+                    });
                 }
 
                 if (reference) {
