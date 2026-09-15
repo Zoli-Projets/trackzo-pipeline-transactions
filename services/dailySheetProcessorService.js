@@ -8,6 +8,45 @@ const {
     updateStatisticsSheet
 } = require("./statisticsSheetService");
 
+function singleLineCell(value) {
+    return String(value ?? "")
+        .replace(/[\r\n\u2028\u2029]+/g, " ")
+        .replace(/[\t ]+/g, " ")
+        .trim();
+}
+
+function semanticTransactionKey(message, result) {
+    const text = singleLineCell(message)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+
+    // Données stables d'une opération : montant + opérateur + type + bénéficiaire.
+    // L'ID, le solde et le format de date peuvent différer entre deux notifications.
+    const phones = [...text.matchAll(/\b(?:225)?0[157]\d{8}\b/g)]
+        .map(m => m[0].replace(/^225/, ""))
+        .sort()
+        .join("|");
+
+    const amount = Number(result?.amount?.value || 0);
+    const operator = String(result?.operator || "");
+    const type = String(result?.type || "");
+
+    let core = text
+        .replace(/\b(?:id\s*transaction|transaction\s*id|transactionid|ref(?:erence)?)\s*[:#.-]?\s*[a-z0-9.-]+\b/gi, " ")
+        .replace(/\b(?:votre\s+)?(?:nouveau\s+)?solde[^.]*\.?/gi, " ")
+        .replace(/\ble\s+(?:\d{2}[-/]\d{2}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s+\d{2}:\d{2}:\d{2}\b/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    // Pour les doubles notifications "Vous avez envoyé...", les éléments
+    // déterminants sont montant/opérateur/type/numéro destinataire.
+    if (/vous avez envoye|vous avez envoyé/.test(core) && amount > 0 && phones) {
+        return `send|${amount}|${operator}|${type}|${phones}`;
+    }
+    return "";
+}
+
 async function getSheetsClient(refreshToken) {
     const oauth2Client = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
@@ -92,7 +131,7 @@ async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows) {
 
     const rowData = rows.map(row => ({
         values: row.slice(0, 7).map(value => ({
-            userEnteredValue: { stringValue: String(value ?? "") },
+            userEnteredValue: { stringValue: singleLineCell(value) },
             userEnteredFormat: { wrapStrategy: "CLIP" }
         }))
     }));
@@ -166,6 +205,7 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     const cleanRows = [];
     const alertRows = [];
     const processed = [];
+    const semanticKeys = new Set();
     let errors = 0;
 
     for (const raw of rawRows) {
@@ -202,14 +242,23 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                 type === "Autre";
 
             const normalizedReference = reference.toUpperCase();
-            const duplicate =
+            const semanticKey = semanticTransactionKey(raw.message, result);
+            const duplicateByReference =
                 Boolean(reference) &&
                 existingReferences.has(normalizedReference);
+            const duplicateByOperatorNotification =
+                Boolean(semanticKey) &&
+                semanticKeys.has(semanticKey);
+            const duplicate = duplicateByReference || duplicateByOperatorNotification;
 
             if (nonTransaction || insufficient || duplicate) {
                 alertRows.push(row);
             } else {
                 cleanRows.push(row);
+
+                if (semanticKey) {
+                    semanticKeys.add(semanticKey);
+                }
 
                 if (reference) {
                     existingReferences.add(normalizedReference);

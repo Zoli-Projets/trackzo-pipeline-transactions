@@ -3,6 +3,13 @@ const { google } = require("googleapis");
 const TECH_SHEET_NAME = "_Trackzo_Technique";
 const RAW_SHEET_NAME = "Transactions brutes";
 
+function singleLineCell(value) {
+    return String(value ?? "")
+        .replace(/[\r\n\u2028\u2029]+/g, " ")
+        .replace(/[\t ]+/g, " ")
+        .trim();
+}
+
 async function getSheetsClient(refreshToken) {
     const auth = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
@@ -187,7 +194,7 @@ async function appendRawRows(refreshToken, spreadsheetId, rows) {
 
     const visibleRowData = rows.map(row => ({
         values: row.slice(0, 4).map(value => ({
-            userEnteredValue: { stringValue: String(value ?? "") },
+            userEnteredValue: { stringValue: singleLineCell(value) },
             userEnteredFormat: { wrapStrategy: "CLIP" }
         }))
     }));

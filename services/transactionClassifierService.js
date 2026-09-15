@@ -205,6 +205,8 @@ function extractReference(message) {
     if (orangeRef) return orangeRef[1].toUpperCase().trim();
 
     const patterns = [
+        /\bTransaction\s*ID\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
+        /\bTransactionID\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
         /\bID\s+Transaction\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
 
         // Certains SMS/UI ajoutent une ponctuation ou un lien entre "ID" et
