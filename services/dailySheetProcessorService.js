@@ -92,7 +92,8 @@ async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows) {
 
     const rowData = rows.map(row => ({
         values: row.slice(0, 7).map(value => ({
-            userEnteredValue: { stringValue: String(value ?? "") }
+            userEnteredValue: { stringValue: String(value ?? "") },
+            userEnteredFormat: { wrapStrategy: "CLIP" }
         }))
     }));
 
@@ -119,7 +120,7 @@ async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows) {
                             columnIndex: 0
                         },
                         rows: rowData,
-                        fields: "userEnteredValue"
+                        fields: "userEnteredValue,userEnteredFormat.wrapStrategy"
                     }
                 }
             ]

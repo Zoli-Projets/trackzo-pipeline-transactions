@@ -84,12 +84,49 @@ function accountVerificationRequired() {
   return String(process.env.REQUIRE_ACCOUNT_VERIFICATION || "false").trim().toLowerCase() === "true";
 }
 
+
+async function reconcileActiveDevices(userId) {
+  const now = new Date();
+  const liveSessions = await Session.findAll({
+    where: {
+      userId,
+      revokedAt: null,
+      expiresAt: { [Op.gt]: now }
+    },
+    attributes: ["deviceId"]
+  });
+
+  const liveDeviceIds = new Set(liveSessions.map((session) => String(session.deviceId)));
+  const activeDevices = await Device.findAll({ where: { userId, active: true } });
+
+  const staleIds = activeDevices
+    .filter((device) => !liveDeviceIds.has(String(device.id)))
+    .map((device) => device.id);
+
+  if (staleIds.length > 0) {
+    await Device.update(
+      { active: false, authTokenHash: null },
+      { where: { userId, id: { [Op.in]: staleIds } } }
+    );
+  }
+
+  return staleIds.length;
+}
+
+function deviceLimitMessage(maxDevices) {
+  const max = Number(maxDevices || 1);
+  return `Limite de ${max} ${max === 1 ? "appareil" : "appareils"} atteinte`;
+}
+
 async function authorizeNewDeviceWithoutVerification(user, {
   deviceUuid,
   deviceName,
   androidVersion,
   replaceDeviceId
 }) {
+  // Les anciennes sessions révoquées/expirées ne doivent jamais consommer le quota.
+  await reconcileActiveDevices(user.id);
+
   const subscription = await getCurrentSubscription(user.id);
   const maxDevices = subscription && subscription.status === "ACTIVE"
     ? Number(subscription.maxDevices || 1)
@@ -102,7 +139,7 @@ async function authorizeNewDeviceWithoutVerification(user, {
 
   if (activeDevices.length >= maxDevices) {
     if (!replaceDeviceId) {
-      const error = new Error(`Limite de ${maxDevices} appareil(s) atteinte`);
+      const error = new Error(deviceLimitMessage(maxDevices));
       error.code = "DEVICE_LIMIT_REACHED";
       error.devices = activeDevices.map(publicDevice);
       throw error;
@@ -354,6 +391,7 @@ router.post("/login/verify", async (req, res) => {
     const user = await User.findByPk(verification.userId);
     if (!user || user.status !== "ACTIVE") return res.status(403).json({ success: false, error: "Compte indisponible" });
 
+    await reconcileActiveDevices(user.id);
     const subscription = await getCurrentSubscription(user.id);
     const maxDevices = subscription && subscription.status === "ACTIVE" ? subscription.maxDevices : 1;
     const activeDevices = await Device.findAll({ where: { userId: user.id, active: true }, order: [["lastSeen", "ASC"]] });
@@ -363,7 +401,7 @@ router.post("/login/verify", async (req, res) => {
         return res.status(409).json({
           success: false,
           code: "DEVICE_LIMIT_REACHED",
-          error: `Limite de ${maxDevices} appareil(s) atteinte`,
+          error: deviceLimitMessage(maxDevices),
           devices: activeDevices.map(publicDevice)
         });
       }
@@ -398,6 +436,10 @@ router.post("/login/verify", async (req, res) => {
 });
 
 router.get("/me", requireAuth, async (req, res) => {
+  await reconcileActiveDevices(req.user.id);
+  // La session de la requête courante est valide : l'appareil courant doit être actif.
+  if (!req.device.active) await req.device.update({ active: true, lastSeen: new Date() });
+
   const subscription = await getCurrentSubscription(req.user.id);
   const devices = await Device.findAll({ where: { userId: req.user.id }, order: [["lastSeen", "DESC"]] });
   return res.json({
@@ -559,7 +601,11 @@ router.delete("/me", requireAuth, async (req, res) => {
 router.post("/logout", requireAuth, async (req, res) => {
   try {
     if (req.session) await req.session.update({ revokedAt: new Date() });
-    await req.device.update({ authTokenHash: null });
+    await req.device.update({
+      active: false,
+      authTokenHash: null,
+      lastSeen: new Date()
+    });
     return res.json({ success: true });
   } catch (error) {
     return res.status(500).json({ success: false, error: "Impossible de fermer la session" });

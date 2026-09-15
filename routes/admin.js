@@ -237,8 +237,13 @@ router.get("/subscriptions", async (req, res) => {
     order: [["updatedAt", "DESC"]],
     limit
   });
-  for (const subscription of subscriptions) await getCurrentSubscription(subscription.userId);
-  return res.json({ success: true, subscriptions });
+  const refreshedSubscriptions = [];
+  for (const subscription of subscriptions) {
+    refreshedSubscriptions.push(
+      (await getCurrentSubscription(subscription.userId)) || subscription
+    );
+  }
+  return res.json({ success: true, subscriptions: refreshedSubscriptions });
 });
 
 module.exports = router;

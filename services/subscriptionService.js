@@ -49,7 +49,13 @@ async function syncSubscriptionStatus(subscription, actor = "SYSTEM") {
 
 async function getCurrentSubscription(userId) {
   const subscription = await Subscription.findOne({ where: { userId } });
-  return syncSubscriptionStatus(subscription);
+  if (!subscription) return null;
+
+  await syncSubscriptionStatus(subscription);
+
+  // Toujours relire la ligne après synchronisation afin que toutes les routes
+  // reçoivent immédiatement le statut réellement enregistré (ACTIVE/EXPIRED/...).
+  return Subscription.findOne({ where: { userId } });
 }
 
 async function grantSubscription({ userId, plan, type = "GIFT", durationDays, reason, actor, notes }) {
