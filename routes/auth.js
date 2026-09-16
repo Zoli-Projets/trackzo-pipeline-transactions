@@ -182,10 +182,31 @@ async function authorizeNewDeviceWithoutVerification(user, {
 
   let device;
   if (existingDevice) {
-    if (existingDevice.userId !== user.id) {
-      const error = new Error("Cet appareil est déjà rattaché à un autre compte");
-      error.code = "DEVICE_ALREADY_LINKED";
-      throw error;
+    if (String(existingDevice.userId) !== String(user.id)) {
+      // Allow account switching only when this physical device has no live
+      // session on the previous account. This prevents silently stealing an
+      // actively connected device while fixing reinstall/account-switch reuse.
+      const livePreviousSession = await Session.findOne({
+        where: {
+          deviceId: existingDevice.id,
+          revokedAt: null,
+          expiresAt: { [Op.gt]: new Date() }
+        }
+      });
+      if (livePreviousSession) {
+        const error = new Error("Cet appareil est encore connecté à un autre compte. Déconnectez d'abord l'ancien compte.");
+        error.code = "DEVICE_ALREADY_LINKED";
+        throw error;
+      }
+
+      await existingDevice.update({
+        userId: user.id,
+        authTokenHash: null,
+        deviceName: deviceName || existingDevice.deviceName || "Android",
+        androidVersion: androidVersion || existingDevice.androidVersion || null,
+        active: true,
+        lastSeen: new Date()
+      });
     }
     device = existingDevice;
     await device.update({
@@ -293,6 +314,9 @@ router.post("/register", async (req, res) => {
     });
   } catch (error) {
     console.error("Erreur création compte:", error);
+    if (error.code === "DEVICE_IN_USE") {
+      return res.status(409).json({ success: false, code: error.code, error: error.message });
+    }
     return res.status(500).json({ success: false, error: error.message });
   }
 });

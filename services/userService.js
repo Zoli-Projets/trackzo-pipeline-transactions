@@ -4,6 +4,8 @@ const Subscription = require("../models/Subscription");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 const UserSettings = require("../models/UserSettings");
 const Template = require("../models/Template");
+const Session = require("../models/Session");
+const { Op } = require("sequelize");
 const sequelize = require("../database/database");
 
 async function createUserAccount(data) {
@@ -23,13 +25,50 @@ async function createUserAccount(data) {
       status: "ACTIVE"
     }, { transaction });
 
-    const device = await Device.create({
-      userId: user.id,
-      deviceUuid: String(deviceUuid).trim(),
-      deviceName: deviceName || "Android",
-      androidVersion: androidVersion || null,
-      active: true
-    }, { transaction });
+    // A physical device can be reused for a new Trackzo account after the
+    // previous account has been logged out. deviceUuid remains globally unique:
+    // we transfer the existing Device row instead of inserting a duplicate.
+    const normalizedDeviceUuid = String(deviceUuid).trim();
+    let device = await Device.findOne({
+      where: { deviceUuid: normalizedDeviceUuid },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+
+    if (device) {
+      const liveSession = await Session.findOne({
+        where: {
+          deviceId: device.id,
+          revokedAt: null,
+          expiresAt: { [Op.gt]: new Date() }
+        },
+        transaction
+      });
+
+      if (liveSession) {
+        const error = new Error("Cet appareil est encore connecté à un autre compte. Déconnectez d'abord l'ancien compte.");
+        error.code = "DEVICE_IN_USE";
+        throw error;
+      }
+
+      // Expired/revoked sessions stay as audit history but cannot authenticate.
+      await device.update({
+        userId: user.id,
+        authTokenHash: null,
+        deviceName: deviceName || device.deviceName || "Android",
+        androidVersion: androidVersion || device.androidVersion || null,
+        active: true,
+        lastSeen: new Date()
+      }, { transaction });
+    } else {
+      device = await Device.create({
+        userId: user.id,
+        deviceUuid: normalizedDeviceUuid,
+        deviceName: deviceName || "Android",
+        androidVersion: androidVersion || null,
+        active: true
+      }, { transaction });
+    }
 
     const now = new Date();
     const subscription = await Subscription.create({
