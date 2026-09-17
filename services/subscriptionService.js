@@ -3,7 +3,7 @@ const Subscription = require("../models/Subscription");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 
 const PLAN_CONFIG = {
-  TRIAL: { durationDays: 7, maxDevices: 5 },
+  TRIAL: { durationDays: 30, maxDevices: 5 },
   BASIC: { durationDays: 30, maxDevices: 2 },
   PRO: { durationDays: 30, maxDevices: 5 },
   ENTERPRISE: { durationDays: 365, maxDevices: 10 }
@@ -78,9 +78,10 @@ async function grantSubscription({ userId, plan, type = "GIFT", durationDays, re
 
     const beforeState = snapshot(subscription);
     const now = new Date();
-    const base = subscription && subscription.status === "ACTIVE" && new Date(subscription.expiresAt) > now
-      ? new Date(subscription.expiresAt)
-      : now;
+    const wasContinuouslyActive = subscription &&
+      subscription.status === "ACTIVE" &&
+      new Date(subscription.expiresAt) > now;
+    const base = wasContinuouslyActive ? new Date(subscription.expiresAt) : now;
     const expiresAt = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
     if (!subscription) {
@@ -99,7 +100,10 @@ async function grantSubscription({ userId, plan, type = "GIFT", durationDays, re
         plan: normalizedPlan,
         type: normalizedType,
         status: "ACTIVE",
-        startsAt: subscription.startsAt || now,
+        // Une réactivation après expiration ouvre une NOUVELLE période couverte.
+        // Cela permet au backend de refuser définitivement les SMS accumulés
+        // pendant l'expiration, même si le téléphone était hors ligne.
+        startsAt: wasContinuouslyActive ? (subscription.startsAt || now) : now,
         expiresAt,
         maxDevices: config.maxDevices,
         notes: notes || subscription.notes || null

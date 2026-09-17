@@ -1,8 +1,10 @@
 const SmsService = require("../services/SmsService");
 const { requireAuth } = require("../middleware/auth");
+const { requireActiveSubscription } = require("../middleware/subscription");
 
 exports.sendSms = [
     requireAuth,
+    requireActiveSubscription,
     async (req, res) => {
         try {
             const userId =
@@ -58,6 +60,22 @@ exports.sendSms = [
                 Number.isFinite(receivedAt) && receivedAt > 0
                     ? Math.trunc(receivedAt)
                     : Date.now();
+
+            // V53 — pas de rattrapage gratuit après expiration.
+            // requireActiveSubscription a placé la période courante dans req.subscription.
+            // Après une réactivation, startsAt est remis à la date de réactivation :
+            // tout SMS reçu avant cette nouvelle période est définitivement non éligible.
+            const coverageStartsAt = req.subscription?.startsAt
+                ? new Date(req.subscription.startsAt).getTime()
+                : 0;
+            if (coverageStartsAt > 0 && normalizedReceivedAt < coverageStartsAt) {
+                return res.status(410).json({
+                    success: false,
+                    code: "SUBSCRIPTION_PERIOD_NOT_COVERED",
+                    error: "Ce SMS a été reçu hors de votre période d’abonnement active et ne sera pas traité.",
+                    coverageStartsAt: req.subscription.startsAt
+                });
+            }
 
             const result = await SmsService.send({
                 userId,
