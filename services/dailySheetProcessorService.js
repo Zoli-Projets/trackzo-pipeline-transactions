@@ -34,12 +34,10 @@ function semanticTransactionKey(message, result) {
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
 
-    const transactionClock = extractTransactionClock(message);
-    if (!transactionClock) {
-        // Pas de déduplication sémantique agressive sans heure à la seconde.
-        return "";
-    }
-
+    // V51 : l'heure n'entre plus dans l'identité sémantique. Les opérateurs
+    // peuvent renvoyer la même opération avec une heure de notification ou une
+    // formulation légèrement différente. On rapproche donc TOUS les types de
+    // transactions sur leurs caractéristiques métier stables.
     const phones = [...text.matchAll(/\b(?:225)?0[157]\d{8}\b/g)]
         .map(m => m[0].replace(/^225/, ""))
         .sort()
@@ -49,14 +47,11 @@ function semanticTransactionKey(message, result) {
     const operator = String(result?.operator || "");
     const type = String(result?.type || "");
 
-    if (
-        /vous avez envoye|vous avez envoyé/.test(text) &&
-        amount > 0 &&
-        phones &&
-        operator &&
-        type
-    ) {
-        return `send|${amount}|${operator}|${type}|${phones}|${transactionClock}`;
+    // Il faut au minimum un numéro présent dans le corps du SMS pour appliquer
+    // cette déduplication sans heure. Cela évite de fusionner agressivement des
+    // opérations génériques ne contenant aucun participant identifiable.
+    if (amount > 0 && phones && operator && type) {
+        return `transaction|${amount}|${operator}|${type}|${phones}`;
     }
 
     return "";
@@ -342,13 +337,30 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                 // Une référence déjà présente signifie que cette opération est déjà
                 // enregistrée. Elle est traitée mais ne devient pas une 2e transaction.
             } else if (semanticKey && semanticSelections.has(semanticKey)) {
-                // Fonctionne aussi si la première notification a été traitée lors
-                // d'une exécution backend précédente : la feuille Nettoyé est la
-                // mémoire persistante de la déduplication sémantique.
+                // La feuille Nettoyé sert de mémoire persistante. L'heure peut être
+                // différente : mêmes caractéristiques stables => même opération.
                 const selected = semanticSelections.get(semanticKey);
-                const candidateScore = transactionCompletenessScore(raw.message, result);
 
-                if (candidateScore > selected.score) {
+                // Deux références explicites différentes restent deux transactions
+                // réelles, même si montant/type/opérateur/numéros sont identiques.
+                // En revanche, si une notification n'a pas de référence et une autre
+                // en apporte une, elles sont fusionnées et la plus complète est gardée.
+                const conflictingReferences = Boolean(
+                    reference && selected.reference &&
+                    normalizedReference !== selected.reference.toUpperCase()
+                );
+
+                if (conflictingReferences) {
+                    const cleanIndex = cleanRows.length;
+                    cleanRows.push(row);
+                    if (reference) existingReferences.add(normalizedReference);
+                    // Ne remplace pas la sélection principale : elle continue à
+                    // permettre aux variantes sans référence de rejoindre le meilleur
+                    // exemplaire déjà connu.
+                } else {
+                    const candidateScore = transactionCompletenessScore(raw.message, result);
+
+                    if (candidateScore > selected.score) {
                     if (selected.cleanIndex !== undefined) {
                         // Le doublon est dans le lot courant : remplacer avant insertion.
                         cleanRows[selected.cleanIndex] = row;
@@ -374,8 +386,9 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                         score: candidateScore,
                         reference
                     });
+                    }
+                    // Le SMS non retenu est marqué traité, sans 2e transaction/statistique.
                 }
-                // Le SMS non retenu est marqué traité, sans 2e transaction/statistique.
             } else {
                 const cleanIndex = cleanRows.length;
                 cleanRows.push(row);

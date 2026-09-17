@@ -11,8 +11,8 @@ const { processDailySheet } = require("./dailySheetProcessorService");
 const PROCESSING_STALE_MS = 5 * 60 * 1000;
 const COMPLETED_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RECEIPT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const PROCESSING_DEBOUNCE_MS = 10000;
-const PROCESSING_RERUN_DELAY_MS = 5000;
+const PROCESSING_DEBOUNCE_MS = 1000;
+const PROCESSING_RERUN_DELAY_MS = 1000;
 
 const processingTimers = new Map();
 const processingRuns = new Set();
