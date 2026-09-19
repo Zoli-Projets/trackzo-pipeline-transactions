@@ -186,6 +186,15 @@ function detectReference(message) {
         String(message || "");
 
 
+    // Moov Money : une référence DIJ s'arrête avant la ponctuation qui
+    // introduit la phrase suivante (ex. DIJ164WLDF.Solde).
+    const moovRef = text.match(
+        /(?:Reference|Référence|Ref|Réf)\s*[:.]?\s*(DIJ[A-Z0-9]{6,})(?=[^A-Z0-9]|$)/i
+    );
+    if (moovRef && detectOperator(text) === "Moov Money") {
+        return moovRef[1].toUpperCase().trim();
+    }
+
     const patterns = [
 
         /recu\s*[:.]?\s*([A-Z0-9]{8,})/i,
@@ -240,95 +249,81 @@ function detectReference(message) {
 
 function detectType(message) {
 
-    const text =
-        normalizeText(message);
+    const text = normalizeText(message);
+    const hasReference = !!detectReference(message);
+    const operator = detectOperator(message);
 
+    // Règles métier Moov uniquement. Les autres opérateurs continuent
+    // d'utiliser exactement les règles génériques ci-dessous.
+    if (operator === "Moov Money") {
+        const toPrincipal =
+            text.includes("vers votre compte principal") ||
+            text.includes("vers le compte principal");
 
-    const hasReference =
-        !!detectReference(message);
+        if (text.includes("compte cashout") && toPrincipal) {
+            return "Retrait";
+        }
 
+        if (text.includes("compte commission") && toPrincipal) {
+            return "Recharge";
+        }
+
+        const sretToRetailer =
+            text.includes("un depot") &&
+            text.includes("sur votre numero") &&
+            text.includes("retailer") &&
+            text.includes("sret");
+
+        if (sretToRetailer) {
+            return "U.V en espèce";
+        }
+    }
 
     if (
         hasReference &&
-        (
-            text.includes("compte marchand") ||
-            text.includes("vous avez recu") ||
-            text.includes("vous avez reçu")
-        )
+        (text.includes("compte marchand") || text.includes("vous avez recu"))
     ) {
         return "Recharge";
     }
 
-
     if (
         hasReference &&
-        (
-            text.includes("transfere") ||
-            text.includes("transféré") ||
-            text.includes("le transfert")
-        )
+        (text.includes("transfere") || text.includes("le transfert"))
     ) {
-
         return "U.V en espèce";
-
     }
 
+    // RETRAIT — PRIORITAIRE
+    if (
+        text.includes("retrait") ||
+        text.includes("vous avez retire") ||
+        text.includes("cash out initiated") ||
+        text.includes("cash out")
+    ) {
+        return "Retrait";
+    }
 
-    // ======================================
-// RETRAIT — PRIORITAIRE
-// ======================================
-
-if (
-    lower.includes("retrait") ||
-    lower.includes("vous avez retiré") ||
-    lower.includes("vous avez retire") ||
-    lower.includes("cash out initiated") ||
-    lower.includes("cash out")
-) {
-
-    return "Retrait";
-
-}
-
-
-// ======================================
-// PAIEMENT FACTURE
-// ======================================
-
-if (hasRef ||
-    lower.includes("recharge prépayée") ||
-    lower.includes("recharge prepaye") ||
-    lower.includes("total general") ||
-    lower.includes("compteur") ||
-    lower.includes("facture") ||
-    lower.includes("electricite")
-) {
-
-    return "Paiement facture";
-
-}
-
+    // PAIEMENT FACTURE
+    if (
+        text.includes("recharge prepayee") ||
+        text.includes("total general") ||
+        text.includes("compteur") ||
+        text.includes("facture") ||
+        text.includes("electricite")
+    ) {
+        return "Paiement facture";
+    }
 
     if (
         text.includes("depot") ||
-        text.includes("dépôt") ||
-        text.includes("vous avez envoye") ||
-        text.includes("vous avez envoyé")
+        text.includes("vous avez envoye")
     ) {
-
         return "Dépôt";
-
     }
 
-
-    if (
-        text.includes("transfert international")
-    ) {
-
+    if (text.includes("transfert international")) {
         return "Transf. International";
-
     }
-
 
     if (
         text.includes("achat groupe de") ||
@@ -336,11 +331,8 @@ if (hasRef ||
         text.includes("credit de communication") ||
         text.includes("recharge de")
     ) {
-
         return "Transfère Unité";
-
     }
-
 
     return "Autre";
 }

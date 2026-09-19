@@ -204,6 +204,16 @@ function extractReference(message) {
     );
     if (orangeRef) return orangeRef[1].toUpperCase().trim();
 
+    // Moov Money : les références DIJ sont des identifiants alphanumériques
+    // sans point. Cette règle dédiée évite d'absorber le mot suivant dans
+    // des SMS compacts tels que "Réf : DIJ164WLDF.Solde ...".
+    const moovRef = original.match(
+        /(?:Reference|Référence|Ref|Réf)\s*[:.]?\s*(DIJ[A-Z0-9]{6,})(?=[^A-Z0-9]|$)/i
+    );
+    if (moovRef && detectOperator(original) === "Moov Money") {
+        return moovRef[1].toUpperCase().trim();
+    }
+
     const patterns = [
         /\bTransaction\s*ID\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
         /\bTransactionID\s*[:.]?\s*([A-Za-z0-9][A-Za-z0-9.-]{5,}[A-Za-z0-9])/i,
@@ -243,6 +253,33 @@ function detectType(message, reference, operator) {
     const hasId = /(?:id transaction|trx id|transactionid|transid|trxid)/i.test(lower);
     const moovNumber = /01\d{8}/.test(lower);
     const mtnNumber = /05\d{8}/.test(lower);
+
+    // Règles métier Moov uniquement. Elles sont volontairement isolées et
+    // exécutées avant les règles génériques afin de ne modifier aucun autre
+    // opérateur.
+    if (operator === "Moov Money") {
+        const toPrincipal =
+            lower.includes("vers votre compte principal") ||
+            lower.includes("vers le compte principal");
+
+        if (lower.includes("compte cashout") && toPrincipal) {
+            return "Retrait";
+        }
+
+        if (lower.includes("compte commission") && toPrincipal) {
+            return "Recharge";
+        }
+
+        const sretToRetailer =
+            (lower.includes("un depot") || lower.includes("un dépôt")) &&
+            lower.includes("sur votre numero") &&
+            lower.includes("retailer") &&
+            lower.includes("sret");
+
+        if (sretToRetailer) {
+            return "U.V en espèce";
+        }
+    }
 
     if (
         hasId &&
