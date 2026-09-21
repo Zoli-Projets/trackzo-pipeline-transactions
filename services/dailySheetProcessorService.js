@@ -335,7 +335,12 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                 alertRows.push(row);
             } else if (duplicateByReference) {
                 // Une référence déjà présente signifie que cette opération est déjà
-                // enregistrée. Elle est traitée mais ne devient pas une 2e transaction.
+                // enregistrée. On conserve la déduplication, mais on garde désormais
+                // une trace explicite dans Alertes avant de marquer la source OK.
+                alertRows.push([
+                    ...row.slice(0, 6),
+                    `[DOUBLON] ${raw.message}`
+                ]);
             } else if (semanticKey && semanticSelections.has(semanticKey)) {
                 // La feuille Nettoyé sert de mémoire persistante. L'heure peut être
                 // différente : mêmes caractéristiques stables => même opération.
@@ -363,6 +368,14 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                     if (candidateScore > selected.score) {
                     if (selected.cleanIndex !== undefined) {
                         // Le doublon est dans le lot courant : remplacer avant insertion.
+                        // L'ancien SMS allait sinon être marqué OK sans laisser de trace.
+                        const replacedRow = cleanRows[selected.cleanIndex];
+                        if (replacedRow) {
+                            alertRows.push([
+                                ...replacedRow.slice(0, 6),
+                                `[DOUBLON] ${replacedRow[6]}`
+                            ]);
+                        }
                         cleanRows[selected.cleanIndex] = row;
                     } else if (selected.rowNumber) {
                         // Le doublon est déjà dans Nettoyé : remplacer la ligne existante
@@ -386,8 +399,14 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                         score: candidateScore,
                         reference
                     });
+                    } else {
+                        // Variante sémantique moins complète : ne pas créer une 2e
+                        // transaction, mais conserver sa trace dans Alertes.
+                        alertRows.push([
+                            ...row.slice(0, 6),
+                            `[DOUBLON] ${raw.message}`
+                        ]);
                     }
-                    // Le SMS non retenu est marqué traité, sans 2e transaction/statistique.
                 }
             } else {
                 const cleanIndex = cleanRows.length;
