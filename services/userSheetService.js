@@ -26,11 +26,11 @@ function getServiceAccountEmail() {
 }
 
 /**
- * TEST drive.file + Sheets copyTo
+ * Création du maître utilisateur avec drive.file + Sheets copyTo
  *
- * Le fichier final est créé par le token OAuth de l'utilisateur (drive.file),
- * puis le service account, qui voit le modèle central, copie nativement chaque
- * feuille avec spreadsheets.sheets.copyTo. Aucun traitement transactionnel n'est touché.
+ * Le fichier final est créé par le token OAuth de l'utilisateur (drive.file).
+ * Le service account, qui voit le modèle central, copie les feuilles utilisateur
+ * avec spreadsheets.sheets.copyTo. La feuille Configuration reste interne à Trackzo.
  */
 async function createUserMasterSheet(userId) {
     const googleAccount = await GoogleAccount.findOne({ where: { userId } });
@@ -54,7 +54,7 @@ async function createUserMasterSheet(userId) {
     let servicePermissionId = null;
 
     try {
-        console.log("[COPYTO TEST] 1/7 Création du classeur destination par l'utilisateur (drive.file)");
+        console.log("📄 Création du maître client");
         const created = await userSheets.spreadsheets.create({
             requestBody: {
                 properties: { title: `Trackzo - ${settings.companyName || "Mon entreprise"}` }
@@ -64,7 +64,7 @@ async function createUserMasterSheet(userId) {
         destinationId = created.data.spreadsheetId;
         const defaultSheetId = created.data.sheets?.[0]?.properties?.sheetId;
 
-        console.log("[COPYTO TEST] 2/7 Déplacement du classeur dans le dossier Trackzo");
+        
         const current = await userDrive.files.get({ fileId: destinationId, fields: "parents" });
         await userDrive.files.update({
             fileId: destinationId,
@@ -79,7 +79,7 @@ async function createUserMasterSheet(userId) {
         if (!serviceEmail && adminClient.email) serviceEmail = adminClient.email;
         if (!serviceEmail) throw new Error("Adresse e-mail du service account introuvable");
 
-        console.log("[COPYTO TEST] 3/7 Partage temporaire de la destination avec le service account");
+        
         const permission = await userDrive.permissions.create({
             fileId: destinationId,
             requestBody: { type: "user", role: "writer", emailAddress: serviceEmail },
@@ -87,7 +87,7 @@ async function createUserMasterSheet(userId) {
         });
         servicePermissionId = permission.data.id;
 
-        console.log("[COPYTO TEST] 4/7 Lecture du maître par le service account");
+        
         const source = await adminSheets.spreadsheets.get({
             spreadsheetId: template.googleFileId,
             includeGridData: false,
@@ -101,11 +101,11 @@ async function createUserMasterSheet(userId) {
         );
         if (!sourceSheets.length) throw new Error("Le modèle maître ne contient aucune feuille utilisateur");
 
-        console.log(`[COPYTO TEST] 5/7 Copie native copyTo de ${sourceSheets.length} feuille(s) (Configuration exclue)`);
+        
         const copiedSheets = [];
         for (const sheet of sourceSheets) {
             const title = sheet.properties?.title || String(sheet.properties?.sheetId);
-            console.log(`[COPYTO TEST] copyTo: ${title}`);
+            
             const copied = await adminSheets.spreadsheets.sheets.copyTo({
                 spreadsheetId: template.googleFileId,
                 sheetId: sheet.properties.sheetId,
@@ -160,9 +160,9 @@ async function createUserMasterSheet(userId) {
                     }))
             }
         });
-        console.log("[COPYTO TEST] Noms et ordre des feuilles restaurés à l'identique du maître");
+        
 
-        console.log("[COPYTO TEST] 6/7 Comparaison structure maître / destination");
+        
         const dest = await userSheets.spreadsheets.get({
             spreadsheetId: destinationId,
             includeGridData: false,
@@ -176,7 +176,7 @@ async function createUserMasterSheet(userId) {
         const srcMetadata = (source.data.developerMetadata || []).length;
         const dstMetadata = (dest.data.developerMetadata || []).length;
 
-        console.log("[COPYTO TEST] COMPARAISON:", {
+        console.log("📋 Vérification du maître client:", {
             feuillesMaitre: srcTitles,
             feuillesCopie: dstTitles,
             ordreEtNomsIdentiques: sameTitles,
@@ -186,14 +186,14 @@ async function createUserMasterSheet(userId) {
             developerMetadataCopie: dstMetadata
         });
 
-        console.log("[COPYTO TEST] 7/7 Retrait du partage temporaire");
+        
         await userDrive.permissions.delete({ fileId: destinationId, permissionId: servicePermissionId });
         servicePermissionId = null;
 
         // Vérification finale : le token drive.file de l'utilisateur doit toujours lire le classeur.
         await userDrive.files.get({ fileId: destinationId, fields: "id,name,parents" });
         await userSheets.spreadsheets.get({ spreadsheetId: destinationId, fields: "spreadsheetId,properties.title" });
-        console.log("[COPYTO TEST] SUCCÈS: destination accessible avec drive.file après retrait du partage temporaire");
+        
 
         const agentToken = crypto.randomBytes(32).toString("hex");
         await UserSettings.update({
@@ -207,17 +207,17 @@ async function createUserMasterSheet(userId) {
             agentToken
         }, { where: { userId } });
 
-        console.log("📄 Maître client créé par COPYTO TEST:", destinationId);
+        console.log("✅ Maître client créé:", destinationId);
         console.log("🔒 Feuille Configuration non copiée (réservée à Trackzo)");
         return { id: destinationId, name: `Trackzo - ${settings.companyName || "Mon entreprise"}`, webViewLink: `https://docs.google.com/spreadsheets/d/${destinationId}` };
     } catch (error) {
-        console.error("[COPYTO TEST] ÉCHEC:", error?.response?.data || error?.message || error);
+        console.error("❌ Erreur création maître client:", error?.response?.data || error?.message || error);
         if (destinationId && servicePermissionId) {
             try {
                 await userDrive.permissions.delete({ fileId: destinationId, permissionId: servicePermissionId });
-                console.log("[COPYTO TEST] Partage temporaire nettoyé après échec");
+                console.log("🧹 Permission temporaire nettoyée après échec");
             } catch (cleanupError) {
-                console.error("[COPYTO TEST] Nettoyage permission impossible:", cleanupError?.response?.data || cleanupError?.message);
+                console.error("❌ Nettoyage permission temporaire impossible:", cleanupError?.response?.data || cleanupError?.message);
             }
         }
         throw error;
