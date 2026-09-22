@@ -98,13 +98,19 @@ async function createUserMasterSheet(userId) {
         if (!sourceSheets.length) throw new Error("Le modèle maître ne contient aucune feuille");
 
         console.log(`[COPYTO TEST] 5/7 Copie native copyTo de ${sourceSheets.length} feuille(s)`);
+        const copiedSheets = [];
         for (const sheet of sourceSheets) {
             const title = sheet.properties?.title || String(sheet.properties?.sheetId);
             console.log(`[COPYTO TEST] copyTo: ${title}`);
-            await adminSheets.spreadsheets.sheets.copyTo({
+            const copied = await adminSheets.spreadsheets.sheets.copyTo({
                 spreadsheetId: template.googleFileId,
                 sheetId: sheet.properties.sheetId,
                 requestBody: { destinationSpreadsheetId: destinationId }
+            });
+            copiedSheets.push({
+                sheetId: copied.data.sheetId,
+                title,
+                index: sheet.properties?.index ?? copiedSheets.length
             });
         }
 
@@ -114,6 +120,28 @@ async function createUserMasterSheet(userId) {
                 requestBody: { requests: [{ deleteSheet: { sheetId: defaultSheetId } }] }
             });
         }
+
+        // copyTo préfixe automatiquement les titres (ex. « Copie de Configuration »).
+        // Restaurer strictement les noms et l'ordre du modèle avant que le reste de
+        // Trackzo n'accède à des plages telles que Configuration!B2:B6.
+        await userSheets.spreadsheets.batchUpdate({
+            spreadsheetId: destinationId,
+            requestBody: {
+                requests: copiedSheets
+                    .sort((a, b) => a.index - b.index)
+                    .map((sheet, index) => ({
+                        updateSheetProperties: {
+                            properties: {
+                                sheetId: sheet.sheetId,
+                                title: sheet.title,
+                                index
+                            },
+                            fields: "title,index"
+                        }
+                    }))
+            }
+        });
+        console.log("[COPYTO TEST] Noms et ordre des feuilles restaurés à l'identique du maître");
 
         console.log("[COPYTO TEST] 6/7 Comparaison structure maître / destination");
         const dest = await userSheets.spreadsheets.get({
