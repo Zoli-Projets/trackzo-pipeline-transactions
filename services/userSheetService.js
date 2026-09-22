@@ -1,7 +1,6 @@
 const { google } = require("googleapis");
 
 const Template = require("../models/Template");
-const updateSheetConfiguration = require("./googleSheetsService");
 const crypto = require("crypto");
 const GoogleAccount = require("../models/GoogleAccount");
 const UserSettings = require("../models/UserSettings");
@@ -94,10 +93,15 @@ async function createUserMasterSheet(userId) {
             includeGridData: false,
             fields: "properties,sheets.properties,namedRanges,developerMetadata"
         });
-        const sourceSheets = source.data.sheets || [];
-        if (!sourceSheets.length) throw new Error("Le modèle maître ne contient aucune feuille");
+        const allSourceSheets = source.data.sheets || [];
+        // La feuille Configuration est strictement interne à Trackzo et ne doit
+        // jamais être copiée dans le maître appartenant à l'utilisateur.
+        const sourceSheets = allSourceSheets.filter(
+            sheet => (sheet.properties?.title || "").trim().toLowerCase() !== "configuration"
+        );
+        if (!sourceSheets.length) throw new Error("Le modèle maître ne contient aucune feuille utilisateur");
 
-        console.log(`[COPYTO TEST] 5/7 Copie native copyTo de ${sourceSheets.length} feuille(s)`);
+        console.log(`[COPYTO TEST] 5/7 Copie native copyTo de ${sourceSheets.length} feuille(s) (Configuration exclue)`);
         const copiedSheets = [];
         for (const sheet of sourceSheets) {
             const title = sheet.properties?.title || String(sheet.properties?.sheetId);
@@ -107,10 +111,25 @@ async function createUserMasterSheet(userId) {
                 sheetId: sheet.properties.sheetId,
                 requestBody: { destinationSpreadsheetId: destinationId }
             });
+
+            // Renommer immédiatement la feuille copiée. copyTo ajoute sinon
+            // automatiquement « Copie de ... » au titre de la feuille.
+            await adminSheets.spreadsheets.batchUpdate({
+                spreadsheetId: destinationId,
+                requestBody: {
+                    requests: [{
+                        updateSheetProperties: {
+                            properties: { sheetId: copied.data.sheetId, title },
+                            fields: "title"
+                        }
+                    }]
+                }
+            });
+
             copiedSheets.push({
                 sheetId: copied.data.sheetId,
                 title,
-                index: sheet.properties?.index ?? copiedSheets.length
+                index: copiedSheets.length
             });
         }
 
@@ -121,9 +140,9 @@ async function createUserMasterSheet(userId) {
             });
         }
 
-        // copyTo préfixe automatiquement les titres (ex. « Copie de Configuration »).
-        // Restaurer strictement les noms et l'ordre du modèle avant que le reste de
-        // Trackzo n'accède à des plages telles que Configuration!B2:B6.
+        // Les titres ont déjà été restaurés immédiatement après chaque copyTo.
+        // Ici, on fixe également leur ordre final pour reproduire l'ordre du maître
+        // (hors feuille Configuration, volontairement réservée à l'administration).
         await userSheets.spreadsheets.batchUpdate({
             spreadsheetId: destinationId,
             requestBody: {
@@ -188,16 +207,8 @@ async function createUserMasterSheet(userId) {
             agentToken
         }, { where: { userId } });
 
-        await updateSheetConfiguration(googleAccount.refreshToken, destinationId, {
-            companyName: settings.companyName || "Mon entreprise",
-            country: settings.country || "CI",
-            timezone: settings.timezone || "Africa/Abidjan",
-            openingTime: settings.openingTime || "08:00",
-            closingTime: settings.closingTime || "22:00"
-        });
-
         console.log("📄 Maître client créé par COPYTO TEST:", destinationId);
-        console.log("⚙️ Configuration maître appliquée");
+        console.log("🔒 Feuille Configuration non copiée (réservée à Trackzo)");
         return { id: destinationId, name: `Trackzo - ${settings.companyName || "Mon entreprise"}`, webViewLink: `https://docs.google.com/spreadsheets/d/${destinationId}` };
     } catch (error) {
         console.error("[COPYTO TEST] ÉCHEC:", error?.response?.data || error?.message || error);
