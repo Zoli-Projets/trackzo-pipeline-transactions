@@ -58,6 +58,7 @@
     <div class="actions">
       <button id="grantBtn">Activer / prolonger</button>
       <button id="cancelBtn" class="danger">Annuler l'abonnement</button>
+      <button id="deleteUserBtn" class="danger">Supprimer définitivement le compte</button>
     </div>
     <div id="actionMessage" class="muted" style="margin-top:10px"></div>
   </section>
@@ -108,6 +109,40 @@ async function cancelSub(){
   try{await request('/users/'+encodeURIComponent(selectedUserId)+'/subscription/cancel',{method:'POST',body:JSON.stringify({reason})});$('actionMessage').innerHTML='<span class="ok">Abonnement annulé.</span>';await loadUser(selectedUserId);await searchUsers();}
   catch(e){$('actionMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';}finally{$('cancelBtn').disabled=false;}
 }
-$('save').onclick=()=>searchUsers();$('searchBtn').onclick=searchUsers;$('search').addEventListener('keydown',e=>{if(e.key==='Enter')searchUsers();});$('grantBtn').onclick=grant;$('cancelBtn').onclick=cancelSub;
+async function deleteUser(){
+  if(!selectedUserId)return;
+  let userLabel='cet utilisateur';
+  try{
+    const d=await request('/users/'+encodeURIComponent(selectedUserId));
+    const u=d.user||{};
+    userLabel=u.email||u.phone||u.name||userLabel;
+  }catch{}
+
+  const reason=prompt('Motif de la suppression définitive :','Suppression administrateur');
+  if(!reason)return;
+
+  const confirmation=prompt(
+    'ATTENTION : cette action supprime définitivement le compte Trackzo et ses données de la base.\n\nCompte : '+userLabel+'\n\nSaisis exactement SUPPRIMER pour confirmer :'
+  );
+  if(confirmation!=='SUPPRIMER'){
+    $('actionMessage').innerHTML='<span class="error">Suppression annulée : confirmation incorrecte.</span>';
+    return;
+  }
+  if(!confirm('Dernière confirmation : supprimer définitivement '+userLabel+' ?'))return;
+
+  $('deleteUserBtn').disabled=true;
+  try{
+    await request('/users/'+encodeURIComponent(selectedUserId),{method:'DELETE',body:JSON.stringify({reason,confirmation})});
+    selectedUserId=null;
+    $('detailCard').classList.add('hidden');
+    $('message').innerHTML='<span class="ok">Compte supprimé définitivement de la base de données.</span>';
+    await searchUsers();
+  }catch(e){
+    $('actionMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';
+  }finally{
+    $('deleteUserBtn').disabled=false;
+  }
+}
+$('save').onclick=()=>searchUsers();$('searchBtn').onclick=searchUsers;$('search').addEventListener('keydown',e=>{if(e.key==='Enter')searchUsers();});$('grantBtn').onclick=grant;$('cancelBtn').onclick=cancelSub;$('deleteUserBtn').onclick=deleteUser;
 </script>
 </body></html>

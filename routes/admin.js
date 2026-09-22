@@ -153,6 +153,53 @@ router.post("/users/:userId/subscription/cancel", async (req, res) => {
   }
 });
 
+router.delete("/users/:userId", async (req, res) => {
+  try {
+    const confirmation = String(req.body.confirmation || "").trim();
+    const reason = String(req.body.reason || "").trim();
+
+    if (confirmation !== "SUPPRIMER") {
+      return res.status(400).json({
+        success: false,
+        error: 'Confirmation invalide. Saisis exactement "SUPPRIMER".'
+      });
+    }
+    if (!reason) {
+      return res.status(400).json({ success: false, error: "Motif obligatoire" });
+    }
+
+    const user = await User.findByPk(req.params.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "Utilisateur introuvable" });
+    }
+
+    const deletedUser = {
+      id: user.id,
+      name: user.name || null,
+      email: user.email || null,
+      phone: user.phone || null
+    };
+
+    await deleteUserAccount(user.id);
+
+    console.log("[ADMIN] Compte Trackzo supprimé", {
+      actor: req.adminActor,
+      reason,
+      user: deletedUser
+    });
+
+    return res.json({
+      success: true,
+      message: "Compte Trackzo supprimé définitivement de la base de données.",
+      deletedUser
+    });
+  } catch (error) {
+    console.error("Admin suppression directe compte:", error);
+    const status = error.code === "USER_NOT_FOUND" ? 404 : 500;
+    return res.status(status).json({ success: false, error: error.message });
+  }
+});
+
 
 router.get("/account-deletion-requests", async (req, res) => {
   try {
