@@ -77,8 +77,8 @@ async function createUserAccount(data) {
       type: "TRIAL",
       status: "ACTIVE",
       startsAt: now,
-      expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
-      maxDevices: 1
+      expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+      maxDevices: 5
     }, { transaction });
 
     await SubscriptionEvent.create({
@@ -86,14 +86,14 @@ async function createUserAccount(data) {
       subscriptionId: subscription.id,
       action: "CREATED",
       actor: "SYSTEM",
-      reason: "Essai gratuit de 7 jours créé à l'inscription",
+      reason: "Essai gratuit de 30 jours créé à l'inscription",
       afterState: {
         plan: "TRIAL",
         type: "TRIAL",
         status: "ACTIVE",
         startsAt: subscription.startsAt,
         expiresAt: subscription.expiresAt,
-        maxDevices: 1
+        maxDevices: 5
       }
     }, { transaction });
 

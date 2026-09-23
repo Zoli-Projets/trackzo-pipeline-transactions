@@ -86,22 +86,22 @@ plans:{
 trial:{
 name:"Essai gratuit",
 price:0,
-duration:7,
-devices:1
+duration:30,
+devices:5
 },
 
 basic:{
 name:"Basic",
 price:3000,
 duration:30,
-devices:1
+devices:2
 },
 
 pro:{
 name:"Pro",
-price:9000,
+price:5000,
 duration:30,
-devices:3
+devices:5
 },
 
 enterprise:{

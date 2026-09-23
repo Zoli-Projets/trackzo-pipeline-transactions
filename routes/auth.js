@@ -308,7 +308,7 @@ router.post("/register", async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Compte créé avec période d'essai de 7 jours",
+      message: "Compte créé avec période d'essai de 30 jours",
       ...session,
       emailVerificationRecommended: accountVerificationRequired()
     });
@@ -339,53 +339,41 @@ router.post("/login", async (req, res) => {
       where: { userId: user.id, deviceUuid: String(deviceUuid).trim(), active: true }
     });
     if (knownDevice) {
+      const refreshedDeviceName = String(deviceName || "").trim();
+      const refreshedAndroidVersion = String(androidVersion || "").trim();
+      const updates = {};
+      if (refreshedDeviceName && refreshedDeviceName !== knownDevice.deviceName) {
+        updates.deviceName = refreshedDeviceName;
+      }
+      if (refreshedAndroidVersion && refreshedAndroidVersion !== knownDevice.androidVersion) {
+        updates.androidVersion = refreshedAndroidVersion;
+      }
+      if (Object.keys(updates).length > 0) {
+        await knownDevice.update(updates);
+      }
       const session = await completeLogin(user, knownDevice);
       return res.json({ success: true, message: "Connexion réussie", ...session });
     }
 
-    if (!accountVerificationRequired()) {
-      try {
-        const session = await authorizeNewDeviceWithoutVerification(user, {
-          deviceUuid,
-          deviceName,
-          androidVersion,
-          replaceDeviceId
-        });
-        return res.json({
-          success: true,
-          message: "Nouvel appareil autorisé sans OTP (vérification temporairement désactivée)",
-          verificationRequired: false,
-          ...session
-        });
-      } catch (error) {
-        if (error.code === "DEVICE_LIMIT_REACHED") {
-          return res.status(409).json({
-            success: false,
-            code: error.code,
-            error: error.message,
-            devices: error.devices
-          });
-        }
-        if (["INVALID_REPLACEMENT_DEVICE", "DEVICE_ALREADY_LINKED"].includes(error.code)) {
-          return res.status(409).json({ success: false, code: error.code, error: error.message });
-        }
-        throw error;
-      }
-    }
-
+    // Tout nouvel appareil doit obligatoirement prouver l'accès à un moyen
+    // de contact du compte avant qu'une session soit créée ou que l'appareil
+    // soit activé. Il n'existe plus de contournement via
+    // REQUIRE_ACCOUNT_VERIFICATION=false pour ce parcours.
     let channel;
     let target;
-    if (user.emailVerified && user.email) {
+    if (user.email) {
+      // L'OTP envoyé à l'adresse enregistrée constitue lui-même la preuve
+      // de possession nécessaire pour autoriser ce nouvel appareil.
       channel = "EMAIL";
       target = user.email;
-    } else if (user.phoneVerified && user.phone) {
+    } else if (user.phone) {
       channel = "PHONE";
       target = user.phone;
     } else {
       return res.status(403).json({
         success: false,
         code: "RECOVERY_NOT_CONFIGURED",
-        error: "Nouvel appareil détecté. Aucune méthode de récupération vérifiée n'est disponible. Contactez le support Trackzo."
+        error: "Nouvel appareil détecté. Aucun moyen de vérification n'est disponible. Contactez le support Trackzo."
       });
     }
 
@@ -418,13 +406,8 @@ router.post("/login", async (req, res) => {
 
 router.post("/login/verify", async (req, res) => {
   try {
-    if (!accountVerificationRequired()) {
-      return res.status(409).json({
-        success: false,
-        code: "VERIFICATION_DISABLED",
-        error: "La vérification OTP est temporairement désactivée"
-      });
-    }
+    // La validation OTP d'un nouvel appareil est toujours disponible :
+    // elle ne dépend pas du réglage général de vérification du compte.
     const { challengeId, code, replaceDeviceId } = req.body;
     if (!challengeId || !code) return res.status(400).json({ success: false, error: "Code et challenge obligatoires" });
 
