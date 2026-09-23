@@ -11,13 +11,73 @@ function makeCode() {
   return crypto.randomInt(100000, 1000000).toString();
 }
 
-async function deliverCode(channel, target, code, purpose) {
-  const url = channel === "EMAIL"
-    ? process.env.EMAIL_OTP_WEBHOOK_URL
-    : process.env.SMS_OTP_WEBHOOK_URL;
+async function deliverEmailWithBrevo(target, code, purpose) {
+  const apiKey = String(process.env.BREVO_API_KEY || "").trim();
+  const fromEmail = String(process.env.OTP_FROM_EMAIL || "support@trackzo.app").trim();
+  const fromName = String(process.env.OTP_FROM_NAME || "Trackzo").trim();
 
+  if (!apiKey || !fromEmail) {
+    const error = new Error("Service de vérification temporairement indisponible. Veuillez réessayer plus tard.");
+    error.code = "OTP_PROVIDER_NOT_CONFIGURED";
+    throw error;
+  }
+
+  const isNewDevice = purpose === "LOGIN_NEW_DEVICE";
+  const subject = isNewDevice ? "Votre code de vérification Trackzo" : "Votre code Trackzo";
+  const textContent = [
+    `Votre code de vérification Trackzo est : ${code}`,
+    "",
+    "Ce code expire dans 10 minutes.",
+    isNewDevice ? "Il permet d'autoriser la connexion d'un nouvel appareil à votre compte." : "",
+    "Si vous n'êtes pas à l'origine de cette demande, ignorez cet email."
+  ].filter(Boolean).join("\n");
+
+  let response;
+  try {
+    response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "api-key": apiKey
+      },
+      body: JSON.stringify({
+        sender: { name: fromName, email: fromEmail },
+        to: [{ email: target }],
+        subject,
+        textContent
+      })
+    });
+  } catch (_) {
+    const error = new Error("Service de vérification temporairement indisponible. Veuillez réessayer plus tard.");
+    error.code = "OTP_DELIVERY_FAILED";
+    throw error;
+  }
+
+  if (!response.ok) {
+    // Ne jamais renvoyer au client le détail de Brevo ni une information sensible.
+    let providerCode = "";
+    try {
+      const body = await response.json();
+      providerCode = String(body && body.code || "").toLowerCase();
+    } catch (_) {}
+
+    const error = new Error("Impossible d'envoyer le code de vérification pour le moment. Veuillez réessayer plus tard.");
+    error.code = response.status === 429 || providerCode.includes("limit") || providerCode.includes("quota")
+      ? "OTP_PROVIDER_QUOTA_REACHED"
+      : "OTP_DELIVERY_FAILED";
+    throw error;
+  }
+}
+
+async function deliverCode(channel, target, code, purpose) {
+  if (channel === "EMAIL") {
+    return deliverEmailWithBrevo(target, code, purpose);
+  }
+
+  const url = process.env.SMS_OTP_WEBHOOK_URL;
   if (!url) {
-    const error = new Error(`Fournisseur OTP ${channel} non configuré`);
+    const error = new Error("Service de vérification temporairement indisponible. Veuillez réessayer plus tard.");
     error.code = "OTP_PROVIDER_NOT_CONFIGURED";
     throw error;
   }
@@ -34,7 +94,7 @@ async function deliverCode(channel, target, code, purpose) {
   });
 
   if (!response.ok) {
-    const error = new Error(`Échec d'envoi du code ${channel}`);
+    const error = new Error("Impossible d'envoyer le code de vérification pour le moment. Veuillez réessayer plus tard.");
     error.code = "OTP_DELIVERY_FAILED";
     throw error;
   }

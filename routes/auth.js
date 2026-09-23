@@ -84,6 +84,10 @@ function accountVerificationRequired() {
   return String(process.env.REQUIRE_ACCOUNT_VERIFICATION || "false").trim().toLowerCase() === "true";
 }
 
+function newDeviceOtpRequired() {
+  return String(process.env.OTP_NOUVEL_APPAREIL || "false").trim().toLowerCase() === "true";
+}
+
 
 async function reconcileActiveDevices(userId) {
   const now = new Date();
@@ -355,10 +359,24 @@ router.post("/login", async (req, res) => {
       return res.json({ success: true, message: "Connexion réussie", ...session });
     }
 
-    // Tout nouvel appareil doit obligatoirement prouver l'accès à un moyen
-    // de contact du compte avant qu'une session soit créée ou que l'appareil
-    // soit activé. Il n'existe plus de contournement via
-    // REQUIRE_ACCOUNT_VERIFICATION=false pour ce parcours.
+    // Interrupteur de production pour l'OTP des nouveaux appareils.
+    // false : comportement normal sans OTP (Brevo n'est pas appelé).
+    // true  : OTP obligatoire avant toute activation du nouvel appareil.
+    if (!newDeviceOtpRequired()) {
+      const session = await authorizeNewDeviceWithoutVerification(user, {
+        deviceUuid,
+        deviceName,
+        androidVersion,
+        replaceDeviceId
+      });
+      return res.json({
+        success: true,
+        verificationRequired: false,
+        message: "Connexion réussie",
+        ...session
+      });
+    }
+
     let channel;
     let target;
     if (user.email) {
@@ -399,8 +417,16 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Erreur connexion:", error);
-    const status = error.code === "OTP_PROVIDER_NOT_CONFIGURED" ? 503 : 500;
-    return res.status(status).json({ success: false, code: error.code, error: error.message });
+    let status = 500;
+    if (["OTP_PROVIDER_NOT_CONFIGURED", "OTP_DELIVERY_FAILED", "OTP_PROVIDER_QUOTA_REACHED"].includes(error.code)) status = 503;
+    if (error.code === "DEVICE_LIMIT_REACHED") status = 409;
+    if (["INVALID_REPLACEMENT_DEVICE", "DEVICE_ALREADY_LINKED"].includes(error.code)) status = 409;
+    return res.status(status).json({
+      success: false,
+      code: error.code,
+      error: error.message,
+      ...(error.devices ? { devices: error.devices } : {})
+    });
   }
 });
 
