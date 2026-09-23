@@ -473,8 +473,40 @@ router.post("/login/verify", async (req, res) => {
       }
     });
 
-    if (device.userId !== user.id) return res.status(409).json({ success: false, error: "Cet appareil est déjà rattaché à un autre compte" });
-    if (!device.active) await device.update({ active: true });
+    if (String(device.userId) !== String(user.id)) {
+      // Même règle que le parcours sans OTP : un téléphone peut passer à un
+      // autre compte après déconnexion, mais jamais tant qu'une session de
+      // l'ancien compte est encore active sur cet appareil.
+      const livePreviousSession = await Session.findOne({
+        where: {
+          deviceId: device.id,
+          revokedAt: null,
+          expiresAt: { [Op.gt]: new Date() }
+        }
+      });
+
+      if (livePreviousSession) {
+        return res.status(409).json({
+          success: false,
+          code: "DEVICE_ALREADY_LINKED",
+          error: "Cet appareil est encore connecté à un autre compte. Déconnectez d'abord l'ancien compte."
+        });
+      }
+
+      await device.update({
+        userId: user.id,
+        authTokenHash: null,
+        deviceName: metadata.deviceName || device.deviceName || "Android",
+        androidVersion: metadata.androidVersion || device.androidVersion || null,
+        active: true,
+        lastSeen: new Date()
+      });
+    } else {
+      const updates = { active: true, lastSeen: new Date() };
+      if (metadata.deviceName) updates.deviceName = metadata.deviceName;
+      if (metadata.androidVersion) updates.androidVersion = metadata.androidVersion;
+      await device.update(updates);
+    }
 
     const session = await completeLogin(user, device);
     await verification.update({ consumedAt: new Date() });
