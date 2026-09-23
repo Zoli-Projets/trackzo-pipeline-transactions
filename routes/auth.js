@@ -339,24 +339,26 @@ router.post("/login", async (req, res) => {
       return res.status(403).json({ success: false, code: "ACCOUNT_DISABLED", error: user.status === "SUSPENDED" ? "Compte suspendu" : "Compte désactivé" });
     }
 
+    // Un appareil déjà rattaché à ce compte reste un appareil connu même
+    // après une déconnexion. Le logout ferme la session et peut mettre
+    // active=false, mais il ne doit pas déclencher un nouvel OTP lors de la
+    // reconnexion au même compte.
     const knownDevice = await Device.findOne({
-      where: { userId: user.id, deviceUuid: String(deviceUuid).trim(), active: true }
+      where: { userId: user.id, deviceUuid: String(deviceUuid).trim() }
     });
     if (knownDevice) {
-      const refreshedDeviceName = String(deviceName || "").trim();
-      const refreshedAndroidVersion = String(androidVersion || "").trim();
-      const updates = {};
-      if (refreshedDeviceName && refreshedDeviceName !== knownDevice.deviceName) {
-        updates.deviceName = refreshedDeviceName;
-      }
-      if (refreshedAndroidVersion && refreshedAndroidVersion !== knownDevice.androidVersion) {
-        updates.androidVersion = refreshedAndroidVersion;
-      }
-      if (Object.keys(updates).length > 0) {
-        await knownDevice.update(updates);
-      }
-      const session = await completeLogin(user, knownDevice);
-      return res.json({ success: true, message: "Connexion réussie", ...session });
+      const session = await authorizeNewDeviceWithoutVerification(user, {
+        deviceUuid,
+        deviceName,
+        androidVersion,
+        replaceDeviceId
+      });
+      return res.json({
+        success: true,
+        verificationRequired: false,
+        message: "Connexion réussie",
+        ...session
+      });
     }
 
     // Interrupteur de production pour l'OTP des nouveaux appareils.
