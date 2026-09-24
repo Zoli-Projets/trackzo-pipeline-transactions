@@ -267,7 +267,7 @@ async function markProcessed(sheets, spreadsheetId, processed) {
     });
 }
 
-async function processDailySheet(refreshToken, spreadsheetId) {
+async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
     const sheets = await getSheetsClient(refreshToken);
     const rawRows = await readRawRows(sheets, spreadsheetId);
 
@@ -283,6 +283,12 @@ async function processDailySheet(refreshToken, spreadsheetId) {
     }
 
     const existingReferences = await readExistingReferences(sheets, spreadsheetId);
+    // Références qui existaient déjà AVANT ce passage. Si une ligne brute non
+    // marquée OK est rejouée après une exécution interrompue, sa référence peut
+    // déjà être dans Nettoyé : c'est un rejeu idempotent, pas un nouveau doublon
+    // à ajouter dans Alertes.
+    const referencesPresentBeforeRun = new Set(existingReferences);
+    const referencesAcceptedThisRun = new Set();
     const existingSemanticTransactions =
         await readExistingSemanticTransactions(sheets, spreadsheetId);
     const cleanRows = [];
@@ -330,13 +336,24 @@ async function processDailySheet(refreshToken, spreadsheetId) {
             const duplicateByReference =
                 Boolean(reference) &&
                 existingReferences.has(normalizedReference);
+            const duplicateCreatedThisRun =
+                duplicateByReference &&
+                referencesAcceptedThisRun.has(normalizedReference);
+            const replayOfPreviouslyProcessedReference =
+                duplicateByReference &&
+                referencesPresentBeforeRun.has(normalizedReference) &&
+                !duplicateCreatedThisRun;
 
             if (nonTransaction || insufficient) {
                 alertRows.push(row);
-            } else if (duplicateByReference) {
-                // Une référence déjà présente signifie que cette opération est déjà
-                // enregistrée. On conserve la déduplication, mais on garde désormais
-                // une trace explicite dans Alertes avant de marquer la source OK.
+            } else if (replayOfPreviouslyProcessedReference) {
+                // La transaction est déjà dans Nettoyé alors que la ligne brute est
+                // encore à traiter (exécution précédente interrompue, retry, course).
+                // Ne surtout pas créer un faux [DOUBLON] dans Alertes : on se contente
+                // de marquer la source OK à la fin de ce passage.
+            } else if (duplicateCreatedThisRun) {
+                // Deux lignes distinctes de Transactions brutes portent réellement
+                // la même référence pendant CE passage : c'est un vrai doublon source.
                 alertRows.push([
                     ...row.slice(0, 6),
                     `[DOUBLON] ${raw.message}`
@@ -358,7 +375,10 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                 if (conflictingReferences) {
                     const cleanIndex = cleanRows.length;
                     cleanRows.push(row);
-                    if (reference) existingReferences.add(normalizedReference);
+                    if (reference) {
+                        existingReferences.add(normalizedReference);
+                        referencesAcceptedThisRun.add(normalizedReference);
+                    }
                     // Ne remplace pas la sélection principale : elle continue à
                     // permettre aux variantes sans référence de rejoindre le meilleur
                     // exemplaire déjà connu.
@@ -391,6 +411,7 @@ async function processDailySheet(refreshToken, spreadsheetId) {
                     }
                     if (reference) {
                         existingReferences.add(normalizedReference);
+                        referencesAcceptedThisRun.add(normalizedReference);
                     }
 
                     semanticSelections.set(semanticKey, {
@@ -422,6 +443,7 @@ async function processDailySheet(refreshToken, spreadsheetId) {
 
                 if (reference) {
                     existingReferences.add(normalizedReference);
+                    referencesAcceptedThisRun.add(normalizedReference);
                 }
 
                 if (amount > 1000000) {
@@ -475,6 +497,29 @@ async function processDailySheet(refreshToken, spreadsheetId) {
         errors,
         statistics
     };
+}
+
+// Tous les appels (SMS automatique, Apps Script, endpoint manuel) passent ici.
+// Une seule exécution par spreadsheetId à la fois évite que deux traitements
+// lisent simultanément la même ligne brute avant son marquage OK et écrivent
+// plusieurs fois le même [DOUBLON] dans Alertes.
+const processingQueues = new Map();
+
+async function processDailySheet(refreshToken, spreadsheetId) {
+    const previous = processingQueues.get(spreadsheetId) || Promise.resolve();
+    const run = previous
+        .catch(() => undefined)
+        .then(() => processDailySheetUnlocked(refreshToken, spreadsheetId));
+
+    processingQueues.set(spreadsheetId, run);
+
+    try {
+        return await run;
+    } finally {
+        if (processingQueues.get(spreadsheetId) === run) {
+            processingQueues.delete(spreadsheetId);
+        }
+    }
 }
 
 module.exports = { processDailySheet };
