@@ -55,6 +55,23 @@ lastSeen:{
 active:{
     type:DataTypes.BOOLEAN,
     defaultValue:true
+},
+
+
+// Appareil déjà autorisé pour le compte auquel la ligne est actuellement rattachée.
+// Une déconnexion peut mettre active=false sans retirer cette confiance.
+trusted:{
+    type:DataTypes.BOOLEAN,
+    allowNull:false,
+    defaultValue:true
+},
+
+
+// Trace anti-abus persistante : première participation de cet appareil à un essai.
+// Cette valeur n'est jamais effacée lors d'un changement de compte.
+trialUsedAt:{
+    type:DataTypes.DATE,
+    allowNull:true
 }
 
 },

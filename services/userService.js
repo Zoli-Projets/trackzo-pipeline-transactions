@@ -35,6 +35,10 @@ async function createUserAccount(data) {
       lock: transaction.LOCK.UPDATE
     });
 
+    // L'historique d'essai appartient à l'appareil et survit au transfert
+    // de la ligne Device vers un autre compte.
+    const deviceAlreadyUsedTrial = Boolean(device && device.trialUsedAt);
+
     if (device) {
       const liveSession = await Session.findOne({
         where: {
@@ -58,6 +62,7 @@ async function createUserAccount(data) {
         deviceName: deviceName || device.deviceName || "Android",
         androidVersion: androidVersion || device.androidVersion || null,
         active: true,
+        trusted: true,
         lastSeen: new Date()
       }, { transaction });
     } else {
@@ -66,31 +71,44 @@ async function createUserAccount(data) {
         deviceUuid: normalizedDeviceUuid,
         deviceName: deviceName || "Android",
         androidVersion: androidVersion || null,
-        active: true
+        active: true,
+        trusted: true
       }, { transaction });
     }
 
     const now = new Date();
+    const trialGranted = !deviceAlreadyUsedTrial;
     const subscription = await Subscription.create({
       userId: user.id,
       plan: "TRIAL",
       type: "TRIAL",
-      status: "ACTIVE",
+      status: trialGranted ? "ACTIVE" : "EXPIRED",
       startsAt: now,
-      expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
-      maxDevices: 5
+      expiresAt: trialGranted
+        ? new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+        : now,
+      maxDevices: 5,
+      notes: trialGranted ? null : "Essai non accordé : appareil ayant déjà participé à un essai Trackzo"
     }, { transaction });
+
+    // Le premier appareil consomme l'éligibilité d'essai dès la création du
+    // compte. Cette trace reste attachée à l'appareil même s'il change de compte.
+    if (trialGranted && !device.trialUsedAt) {
+      await device.update({ trialUsedAt: now }, { transaction });
+    }
 
     await SubscriptionEvent.create({
       userId: user.id,
       subscriptionId: subscription.id,
       action: "CREATED",
       actor: "SYSTEM",
-      reason: "Essai gratuit de 30 jours créé à l'inscription",
+      reason: trialGranted
+        ? "Essai gratuit de 30 jours créé à l'inscription"
+        : "Essai gratuit non accordé : appareil déjà utilisé pendant un essai",
       afterState: {
         plan: "TRIAL",
         type: "TRIAL",
-        status: "ACTIVE",
+        status: subscription.status,
         startsAt: subscription.startsAt,
         expiresAt: subscription.expiresAt,
         maxDevices: 5
@@ -104,7 +122,7 @@ async function createUserAccount(data) {
       templateId: activeTemplate ? activeTemplate.id : null
     }, { transaction });
 
-    return { user, device };
+    return { user, device, trialGranted };
   });
 }
 

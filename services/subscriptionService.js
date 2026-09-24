@@ -77,6 +77,16 @@ async function grantSubscription({ userId, plan, type = "GIFT", durationDays, re
     });
 
     const beforeState = snapshot(subscription);
+
+    // Un essai appartient au compte et ne peut être recréé/renouvelé comme
+    // nouvel essai. Une intervention commerciale volontaire reste possible
+    // via type=GIFT, qui est tracée séparément dans SubscriptionEvent.
+    if (normalizedType === "TRIAL" && subscription) {
+      const error = new Error("Ce compte a déjà consommé ou reçu son essai Trackzo");
+      error.code = "TRIAL_ALREADY_USED";
+      throw error;
+    }
+
     const now = new Date();
     const wasContinuouslyActive = subscription &&
       subscription.status === "ACTIVE" &&

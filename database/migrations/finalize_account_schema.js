@@ -47,6 +47,35 @@ async function finalizeAccountSchema(sequelize) {
     }
   }
 
+  // Appareils : confiance de connexion séparée de l'activité de session,
+  // et historique anti-abus de participation à l'essai gratuit.
+  await addColumnIfMissing(sequelize, "devices", "trusted", `BOOLEAN NOT NULL DEFAULT TRUE`);
+  await addColumnIfMissing(sequelize, "devices", "trialUsedAt", `TIMESTAMP WITH TIME ZONE`);
+  if (await tableExists(sequelize, "devices")) {
+    // Les appareils historiques ont déjà été autorisés par Trackzo.
+    await sequelize.query(`UPDATE "devices" SET "trusted" = TRUE WHERE "trusted" IS NULL`);
+
+    // Backfill : si l'identifiant Device a déjà servi dans une session d'un
+    // compte ayant reçu un abonnement de type TRIAL, on conserve cette trace.
+    // Cela protège aussi les essais commencés avant le déploiement de ce champ.
+    if (await tableExists(sequelize, "sessions") && await tableExists(sequelize, "subscriptions")) {
+      await sequelize.query(`
+        UPDATE "devices" d
+        SET "trialUsedAt" = COALESCE(d."trialUsedAt", x."firstTrialUse")
+        FROM (
+          SELECT s."deviceId", MIN(s."createdAt") AS "firstTrialUse"
+          FROM "sessions" s
+          INNER JOIN "subscriptions" sub ON sub."userId" = s."userId"
+          WHERE sub."type" = 'TRIAL'
+          GROUP BY s."deviceId"
+        ) x
+        WHERE d."id" = x."deviceId"
+          AND d."trialUsedAt" IS NULL
+      `);
+    }
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS devices_trial_used_idx ON "devices" ("trialUsedAt") WHERE "trialUsedAt" IS NOT NULL`);
+  }
+
   await addColumnIfMissing(sequelize, "subscriptions", "startsAt", `TIMESTAMP WITH TIME ZONE`);
   await addColumnIfMissing(sequelize, "subscriptions", "notes", `TEXT`);
   if (await tableExists(sequelize, "subscriptions")) {

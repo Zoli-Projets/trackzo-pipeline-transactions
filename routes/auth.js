@@ -24,6 +24,7 @@ function publicDevice(device) {
     deviceName: device.deviceName,
     androidVersion: device.androidVersion,
     active: device.active,
+    trusted: device.trusted,
     lastSeen: device.lastSeen,
     createdAt: device.createdAt
   };
@@ -74,7 +75,24 @@ async function findUserByIdentifier(identifier) {
 }
 
 async function completeLogin(user, device) {
-  await device.update({ lastSeen: new Date() });
+  const now = new Date();
+  const subscription = await getCurrentSubscription(user.id);
+  const updates = { lastSeen: now, trusted: true };
+
+  // Tous les appareils utilisés pendant l'essai du compte partagent la même
+  // période de 30 jours. On mémorise seulement leur participation pour empêcher
+  // qu'un nouveau compte déclenche ensuite un nouvel essai avec le même appareil.
+  if (
+    subscription &&
+    subscription.type === "TRIAL" &&
+    subscription.status === "ACTIVE" &&
+    new Date(subscription.expiresAt) > now &&
+    !device.trialUsedAt
+  ) {
+    updates.trialUsedAt = now;
+  }
+
+  await device.update(updates);
   await cleanupLegacyReinstallDevice(user.id, device);
   const { accessToken, expiresAt } = await issueSession(user.id, device.id);
   return { userId: user.id, accessToken, expiresAt };
@@ -209,6 +227,7 @@ async function authorizeNewDeviceWithoutVerification(user, {
         deviceName: deviceName || existingDevice.deviceName || "Android",
         androidVersion: androidVersion || existingDevice.androidVersion || null,
         active: true,
+        trusted: true,
         lastSeen: new Date()
       });
     }
@@ -217,6 +236,7 @@ async function authorizeNewDeviceWithoutVerification(user, {
       deviceName: deviceName || device.deviceName || "Android",
       androidVersion: androidVersion || device.androidVersion || null,
       active: true,
+      trusted: true,
       lastSeen: new Date()
     });
   } else {
@@ -226,6 +246,7 @@ async function authorizeNewDeviceWithoutVerification(user, {
       deviceName: deviceName || "Android",
       androidVersion: androidVersion || null,
       active: true,
+      trusted: true,
       lastSeen: new Date()
     });
   }
@@ -304,7 +325,7 @@ router.post("/register", async (req, res) => {
     });
     if (existing) return res.status(409).json({ success: false, error: "Un compte existe déjà avec ce téléphone ou cet email" });
 
-    const { user, device } = await createUserAccount({
+    const { user, device, trialGranted } = await createUserAccount({
       name, phone, email: normalizedEmail, country, companyName,
       deviceUuid, deviceName, androidVersion
     });
@@ -312,7 +333,10 @@ router.post("/register", async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Compte créé avec période d'essai de 30 jours",
+      message: trialGranted
+        ? "Compte créé avec période d'essai de 30 jours"
+        : "Compte créé. Cet appareil a déjà bénéficié d'un essai Trackzo : aucun nouvel essai n'a été accordé.",
+      trialGranted,
       ...session,
       emailVerificationRecommended: accountVerificationRequired()
     });
@@ -471,6 +495,7 @@ router.post("/login/verify", async (req, res) => {
         deviceName: metadata.deviceName || "Android",
         androidVersion: metadata.androidVersion || null,
         active: true,
+        trusted: true,
         lastSeen: new Date()
       }
     });
@@ -501,10 +526,11 @@ router.post("/login/verify", async (req, res) => {
         deviceName: metadata.deviceName || device.deviceName || "Android",
         androidVersion: metadata.androidVersion || device.androidVersion || null,
         active: true,
+        trusted: true,
         lastSeen: new Date()
       });
     } else {
-      const updates = { active: true, lastSeen: new Date() };
+      const updates = { active: true, trusted: true, lastSeen: new Date() };
       if (metadata.deviceName) updates.deviceName = metadata.deviceName;
       if (metadata.androidVersion) updates.androidVersion = metadata.androidVersion;
       await device.update(updates);
