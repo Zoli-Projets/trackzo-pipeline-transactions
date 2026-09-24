@@ -4,6 +4,7 @@ const router =
     express.Router();
 
 const { requireAuth } = require("../middleware/auth");
+const { requireActiveSubscription } = require("../middleware/subscription");
 
 const UserSettings =
     require("../models/UserSettings");
@@ -775,6 +776,47 @@ router.post(
 
 
             // ==============================
+            // ABONNEMENT
+            // ==============================
+
+            const subscription =
+                await Subscription.findOne({
+
+                    where: {
+                        userId:
+                            settings.userId
+                    }
+
+                });
+
+            const now = new Date();
+
+            if (
+                !subscription ||
+                subscription.status !== "ACTIVE" ||
+                !subscription.expiresAt ||
+                new Date(subscription.expiresAt) <= now
+            ) {
+
+                return res.status(403).json({
+
+                    success: false,
+
+                    error:
+                        "Abonnement expiré ou inactif",
+
+                    subscriptionStatus:
+                        subscription?.status || "NONE",
+
+                    expiresAt:
+                        subscription?.expiresAt || null
+
+                });
+
+            }
+
+
+            // ==============================
             // JOURNALIER
             // ==============================
 
@@ -912,6 +954,7 @@ return res.json({
 router.post(
     "/ensure-today",
     requireAuth,
+    requireActiveSubscription,
     async (req, res) => {
 
         try {
