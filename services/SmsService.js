@@ -13,11 +13,31 @@ const COMPLETED_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RECEIPT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const PROCESSING_DEBOUNCE_MS = 1000;
 const PROCESSING_RERUN_DELAY_MS = 1000;
+const GOOGLE_QUOTA_RERUN_DELAY_MS = 65 * 1000;
 
 const processingTimers = new Map();
 const processingRuns = new Set();
 const processingDirty = new Set();
 let lastReceiptCleanupAt = 0;
+
+function isGoogleQuotaError(error) {
+    const status =
+        error?.code ||
+        error?.status ||
+        error?.response?.status ||
+        error?.response?.data?.error?.code;
+    const message = String(
+        error?.message ||
+        error?.response?.data?.error?.message ||
+        ""
+    ).toLowerCase();
+
+    return status === 429 ||
+        message.includes("quota exceeded") ||
+        message.includes("rate limit") ||
+        message.includes("read requests per minute") ||
+        message.includes("write requests per minute");
+}
 
 async function cleanupOldCompletedReceipts() {
     const now = Date.now();
@@ -69,14 +89,22 @@ function scheduleProcessing(refreshToken, spreadsheetId, delayMs = PROCESSING_DE
         } catch (error) {
             console.error("⚠️ Traitement feuille différé:", error.message);
             processingDirty.add(spreadsheetId);
+
+            if (isGoogleQuotaError(error)) {
+                // Le quota Sheets est renouvelé par minute. Ne pas relancer toutes
+                // les secondes : cela entretient le 429 et consomme encore du quota.
+                processingTimers.set(spreadsheetId, { quotaCooldown: true });
+            }
         } finally {
             processingRuns.delete(spreadsheetId);
 
             if (processingDirty.delete(spreadsheetId)) {
+                const quotaCooldown = processingTimers.get(spreadsheetId)?.quotaCooldown === true;
+                processingTimers.delete(spreadsheetId);
                 scheduleProcessing(
                     refreshToken,
                     spreadsheetId,
-                    PROCESSING_RERUN_DELAY_MS
+                    quotaCooldown ? GOOGLE_QUOTA_RERUN_DELAY_MS : PROCESSING_RERUN_DELAY_MS
                 );
             }
         }

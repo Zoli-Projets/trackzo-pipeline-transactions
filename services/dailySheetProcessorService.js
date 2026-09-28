@@ -87,19 +87,29 @@ async function getSheetsClient(refreshToken) {
 }
 
 /**
- * Lit les valeurs exactement comme elles sont affichees dans
- * "Transactions brutes". Aucune conversion de date ou d'heure n'est faite.
- * Ainsi Nettoye et Alertes recopient strictement les colonnes A et B.
+ * Une seule lecture batch récupère les deux sources nécessaires au traitement.
+ * Google compte un batchGet comme une requête de lecture, même avec plusieurs
+ * plages. Les valeurs restent FORMATTED_VALUE afin de préserver exactement le
+ * comportement historique (dates/heures telles qu'affichées dans Sheets).
  */
-async function readRawRows(sheets, spreadsheetId) {
-    const response = await sheets.spreadsheets.values.get({
+async function readProcessingSnapshot(sheets, spreadsheetId) {
+    const response = await sheets.spreadsheets.values.batchGet({
         spreadsheetId,
-        range: "'Transactions brutes'!A:D",
+        ranges: [
+            "'Transactions brutes'!A:D",
+            "'Nettoyé'!A:G"
+        ],
         valueRenderOption: "FORMATTED_VALUE"
     });
 
-    const rows = response.data.values || [];
+    const ranges = response.data.valueRanges || [];
+    return {
+        rawRows: ranges[0]?.values || [],
+        cleanRows: ranges[1]?.values || []
+    };
+}
 
+function buildPendingRawRows(rows) {
     return rows
         .slice(1)
         .map((row, index) => ({
@@ -116,15 +126,8 @@ async function readRawRows(sheets, spreadsheetId) {
         );
 }
 
-async function readExistingSemanticTransactions(sheets, spreadsheetId) {
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: "'Nettoyé'!A:G",
-        valueRenderOption: "FORMATTED_VALUE"
-    });
-
+function buildExistingSemanticTransactions(rows) {
     const map = new Map();
-    const rows = response.data.values || [];
 
     rows.slice(1).forEach((row, index) => {
         const message = String(row[6] || "").trim();
@@ -153,6 +156,15 @@ async function readExistingSemanticTransactions(sheets, spreadsheetId) {
     return map;
 }
 
+function buildExistingReferences(rows) {
+    const references = new Set();
+    for (const row of rows.slice(1)) {
+        const ref = String(row[5] || "").trim().toUpperCase();
+        if (ref) references.add(ref);
+    }
+    return references;
+}
+
 async function updateExistingCleanRows(sheets, spreadsheetId, updates) {
     if (!updates.length) return;
 
@@ -168,23 +180,6 @@ async function updateExistingCleanRows(sheets, spreadsheetId, updates) {
     });
 }
 
-async function readExistingReferences(sheets, spreadsheetId) {
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: "'Nettoyé'!F:F",
-        valueRenderOption: "FORMATTED_VALUE"
-    });
-
-    const references = new Set();
-
-    for (const row of (response.data.values || []).slice(1)) {
-        const ref = String(row[0] || "").trim().toUpperCase();
-        if (ref) references.add(ref);
-    }
-
-    return references;
-}
-
 /**
  * Les nouvelles lignes sont inserees juste sous l'en-tete afin que Nettoye et
  * Alertes aient exactement le meme ordre que Transactions brutes :
@@ -193,19 +188,27 @@ async function readExistingReferences(sheets, spreadsheetId) {
  * Les valeurs date/heure sont ecrites comme du texte, sans conversion, pour
  * recopier strictement ce qui est affiche dans Transactions brutes.
  */
-async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows) {
-    if (!rows.length) return;
-
+async function readOutputSheetIds(sheets, spreadsheetId) {
     const metadata = await sheets.spreadsheets.get({
         spreadsheetId,
         fields: "sheets.properties(sheetId,title)"
     });
 
-    const targetSheet = (metadata.data.sheets || []).find(
-        item => item.properties?.title === sheetName
-    );
+    const ids = new Map();
+    for (const item of (metadata.data.sheets || [])) {
+        const title = item.properties?.title;
+        const sheetId = item.properties?.sheetId;
+        if (title && sheetId !== undefined && sheetId !== null) {
+            ids.set(title, sheetId);
+        }
+    }
+    return ids;
+}
 
-    const sheetId = targetSheet?.properties?.sheetId;
+async function insertRowsAtTop(sheets, spreadsheetId, sheetName, rows, sheetIds) {
+    if (!rows.length) return;
+
+    const sheetId = sheetIds.get(sheetName);
     if (sheetId === undefined || sheetId === null) {
         throw new Error(`Feuille introuvable: ${sheetName}`);
     }
@@ -269,7 +272,8 @@ async function markProcessed(sheets, spreadsheetId, processed) {
 
 async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
     const sheets = await getSheetsClient(refreshToken);
-    const rawRows = await readRawRows(sheets, spreadsheetId);
+    const snapshot = await readProcessingSnapshot(sheets, spreadsheetId);
+    const rawRows = buildPendingRawRows(snapshot.rawRows);
 
     if (!rawRows.length) {
         const stats = await updateStatisticsSheet(refreshToken, spreadsheetId);
@@ -282,7 +286,7 @@ async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
         };
     }
 
-    const existingReferences = await readExistingReferences(sheets, spreadsheetId);
+    const existingReferences = buildExistingReferences(snapshot.cleanRows);
     // Références qui existaient déjà AVANT ce passage. Si une ligne brute non
     // marquée OK est rejouée après une exécution interrompue, sa référence peut
     // déjà être dans Nettoyé : c'est un rejeu idempotent, pas un nouveau doublon
@@ -290,7 +294,7 @@ async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
     const referencesPresentBeforeRun = new Set(existingReferences);
     const referencesAcceptedThisRun = new Set();
     const existingSemanticTransactions =
-        await readExistingSemanticTransactions(sheets, spreadsheetId);
+        buildExistingSemanticTransactions(snapshot.cleanRows);
     const cleanRows = [];
     const cleanRowUpdates = [];
     const alertRows = [];
@@ -479,8 +483,13 @@ async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
         spreadsheetId,
         cleanRowUpdates
     );
-    await insertRowsAtTop(sheets, spreadsheetId, "Nettoyé", cleanRows);
-    await insertRowsAtTop(sheets, spreadsheetId, "Alertes", alertRows);
+
+    let outputSheetIds = new Map();
+    if (cleanRows.length || alertRows.length) {
+        outputSheetIds = await readOutputSheetIds(sheets, spreadsheetId);
+    }
+    await insertRowsAtTop(sheets, spreadsheetId, "Nettoyé", cleanRows, outputSheetIds);
+    await insertRowsAtTop(sheets, spreadsheetId, "Alertes", alertRows, outputSheetIds);
     await markProcessed(sheets, spreadsheetId, processed);
 
     // Les statistiques sont regenerees par le meme passage du trigger, une fois

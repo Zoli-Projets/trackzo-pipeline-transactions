@@ -2,6 +2,8 @@ const { google } = require("googleapis");
 
 const TECH_SHEET_NAME = "_Trackzo_Technique";
 const RAW_SHEET_NAME = "Transactions brutes";
+const SHEET_METADATA_TTL_MS = 10 * 60 * 1000;
+const sheetMetadataCache = new Map();
 
 function singleLineCell(value) {
     return String(value ?? "")
@@ -20,15 +22,34 @@ async function getSheetsClient(refreshToken) {
     return google.sheets({ version: "v4", auth });
 }
 
-async function getSheetProperties(sheets, spreadsheetId, title) {
+function invalidateSheetMetadata(spreadsheetId) {
+    sheetMetadataCache.delete(String(spreadsheetId));
+}
+
+async function getSpreadsheetProperties(sheets, spreadsheetId) {
+    const key = String(spreadsheetId);
+    const cached = sheetMetadataCache.get(key);
+    const now = Date.now();
+
+    if (cached && (now - cached.createdAt) <= SHEET_METADATA_TTL_MS) {
+        return cached.properties;
+    }
+
     const response = await sheets.spreadsheets.get({
         spreadsheetId,
         fields: "sheets.properties(sheetId,title,hidden)"
     });
-
-    return (response.data.sheets || [])
+    const properties = (response.data.sheets || [])
         .map(s => s.properties)
-        .find(p => p && p.title === title) || null;
+        .filter(Boolean);
+
+    sheetMetadataCache.set(key, { createdAt: now, properties });
+    return properties;
+}
+
+async function getSheetProperties(sheets, spreadsheetId, title) {
+    const properties = await getSpreadsheetProperties(sheets, spreadsheetId);
+    return properties.find(p => p.title === title) || null;
 }
 
 async function ensureTechnicalSheet(sheets, spreadsheetId) {
@@ -109,6 +130,7 @@ async function ensureTechnicalSheet(sheets, spreadsheetId) {
         range: `'${RAW_SHEET_NAME}'!E2:E`
     });
 
+    invalidateSheetMetadata(spreadsheetId);
     return techSheetId;
 }
 
@@ -275,5 +297,6 @@ module.exports = {
     readRawMessages,
     appendRows,
     updateStatus,
-    readCleanReferences
+    readCleanReferences,
+    invalidateSheetMetadata
 };
