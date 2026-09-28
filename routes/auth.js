@@ -720,14 +720,31 @@ router.delete("/me", requireAuth, async (req, res) => {
 
 router.post("/logout", requireAuth, async (req, res) => {
   try {
-    if (req.session) await req.session.update({ revokedAt: new Date() });
+    const now = new Date();
+
+    // Une déconnexion explicite concerne l'appareil physique, pas seulement
+    // le token qui a servi à appeler cette route. Sans cela, une ancienne
+    // session encore vivante peut faire croire ensuite que l'appareil est
+    // toujours connecté à l'ancien compte.
+    await Session.update(
+      { revokedAt: now },
+      {
+        where: {
+          deviceId: req.device.id,
+          revokedAt: null
+        }
+      }
+    );
+
     await req.device.update({
       active: false,
       authTokenHash: null,
-      lastSeen: new Date()
+      lastSeen: now
     });
-    return res.json({ success: true });
+
+    return res.json({ success: true, deviceReleased: true });
   } catch (error) {
+    console.error("Erreur déconnexion:", error);
     return res.status(500).json({ success: false, error: "Impossible de fermer la session" });
   }
 });
