@@ -12,6 +12,7 @@ const { createVerification, consumeVerification } = require("../services/verific
 const { getCurrentSubscription } = require("../services/subscriptionService");
 const AccountDeletionRequest = require("../models/AccountDeletionRequest");
 const { deleteUserAccount } = require("../services/accountDeletionService");
+const { normalizeInternationalPhone } = require("../services/phoneService");
 
 function normalizeEmail(value) {
   return value ? String(value).trim().toLowerCase() : null;
@@ -315,10 +316,11 @@ router.post("/register", async (req, res) => {
     if (!deviceUuid) return res.status(400).json({ success: false, error: "Identifiant appareil obligatoire" });
 
     const normalizedEmail = normalizeEmail(email);
+    const normalizedPhone = normalizeInternationalPhone(phone, country);
     const existing = await User.findOne({
       where: {
         [Op.or]: [
-          { phone: String(phone).trim() },
+          { phone: normalizedPhone },
           where(fn("LOWER", col("email")), normalizedEmail)
         ]
       }
@@ -326,7 +328,7 @@ router.post("/register", async (req, res) => {
     if (existing) return res.status(409).json({ success: false, error: "Un compte existe déjà avec ce téléphone ou cet email" });
 
     const { user, device, trialGranted } = await createUserAccount({
-      name, phone, email: normalizedEmail, country, companyName,
+      name, phone: normalizedPhone, email: normalizedEmail, country, companyName,
       deviceUuid, deviceName, androidVersion
     });
     const session = await completeLogin(user, device);
@@ -345,7 +347,10 @@ router.post("/register", async (req, res) => {
     if (error.code === "DEVICE_IN_USE") {
       return res.status(409).json({ success: false, code: error.code, error: error.message });
     }
-    return res.status(500).json({ success: false, error: error.message });
+    if (["INVALID_PHONE_FORMAT", "PHONE_COUNTRY_MISMATCH"].includes(error.code)) {
+      return res.status(400).json({ success: false, code: error.code, error: error.message });
+    }
+    return res.status(500).json({ success: false, code: error.code, error: error.message });
   }
 });
 
@@ -540,7 +545,9 @@ router.post("/login/verify", async (req, res) => {
     await verification.update({ consumedAt: new Date() });
     return res.json({ success: true, message: "Nouvel appareil autorisé", ...session });
   } catch (error) {
-    const status = ["VERIFICATION_EXPIRED", "VERIFICATION_INVALID", "VERIFICATION_LOCKED"].includes(error.code) ? 400 : 500;
+    let status = 500;
+    if (["VERIFICATION_EXPIRED", "VERIFICATION_INVALID", "VERIFICATION_LOCKED", "INVALID_REPLACEMENT_DEVICE"].includes(error.code)) status = 400;
+    if (["DEVICE_LIMIT_REACHED", "DEVICE_ALREADY_LINKED"].includes(error.code)) status = 409;
     return res.status(status).json({ success: false, code: error.code, error: error.message });
   }
 });
@@ -621,8 +628,9 @@ router.patch("/profile", requireAuth, async (req, res) => {
 
 router.post("/phone/change/request", requireAuth, async (req, res) => {
   try {
-    const newPhone = String(req.body.newPhone || "").trim();
-    if (!newPhone) return res.status(400).json({ success: false, error: "Nouveau numéro obligatoire" });
+    const rawNewPhone = String(req.body.newPhone || "").trim();
+    if (!rawNewPhone) return res.status(400).json({ success: false, error: "Nouveau numéro obligatoire" });
+    const newPhone = normalizeInternationalPhone(rawNewPhone, req.body.country || req.user.country);
 
     const existing = await User.findOne({ where: { phone: newPhone } });
     if (existing && existing.id !== req.user.id) {
@@ -651,7 +659,8 @@ router.post("/phone/change/request", requireAuth, async (req, res) => {
     });
     return res.json({ success: true, ...challenge });
   } catch (error) {
-    const status = error.code === "OTP_PROVIDER_NOT_CONFIGURED" ? 503 : 500;
+    let status = error.code === "OTP_PROVIDER_NOT_CONFIGURED" ? 503 : 500;
+    if (["INVALID_PHONE_FORMAT", "PHONE_COUNTRY_MISMATCH"].includes(error.code)) status = 400;
     return res.status(status).json({ success: false, code: error.code, error: error.message });
   }
 });
@@ -667,8 +676,9 @@ router.post("/phone/change/confirm", requireAuth, async (req, res) => {
     }
     const verification = await consumeVerification({ challengeId: req.body.challengeId, code: req.body.code, purpose: "CHANGE_PHONE" });
     if (verification.userId !== req.user.id) return res.status(400).json({ success: false, error: "Vérification invalide" });
-    const newPhone = String((verification.metadata || {}).newPhone || "").trim();
-    if (!newPhone) return res.status(400).json({ success: false, error: "Nouveau numéro introuvable" });
+    const storedPhone = String((verification.metadata || {}).newPhone || "").trim();
+    if (!storedPhone) return res.status(400).json({ success: false, error: "Nouveau numéro introuvable" });
+    const newPhone = normalizeInternationalPhone(storedPhone);
     const existing = await User.findOne({ where: { phone: newPhone } });
     if (existing && existing.id !== req.user.id) return res.status(409).json({ success: false, error: "Ce numéro est déjà utilisé" });
     const phoneVerified = (verification.metadata || {}).verifiesNewPhone === true;

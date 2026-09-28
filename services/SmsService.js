@@ -9,7 +9,7 @@ const { appendRawRows, rawHashExists, invalidateSheetMetadata } = require("./dai
 const { processDailySheet } = require("./dailySheetProcessorService");
 
 const PROCESSING_STALE_MS = 5 * 60 * 1000;
-const COMPLETED_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const COMPLETED_RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const RECEIPT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const PROCESSING_DEBOUNCE_MS = 1000;
 const PROCESSING_RERUN_DELAY_MS = 1000;
@@ -306,7 +306,8 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
     }
 
     // En temps normal, PostgreSQL conserve seulement le hash technique et le statut
-    // COMPLETED pendant 30 jours. Aucun contenu SMS n'est stocké.
+    // COMPLETED jusqu'à l'ACK final Android. Sans ACK final, purge de secours après 24 h.
+    // Aucun contenu SMS n'est stocké.
     // La lecture Google du hash n'est nécessaire que lors d'une reprise incertaine.
     // Google Sheets reste la source durable de réconciliation en cas de retry.
     // Aucun appel
@@ -422,4 +423,30 @@ async function send({ userId, sender, message, receivedAt, smsHash }) {
     };
 }
 
-module.exports = { send };
+async function acknowledgeCompletedReceipt({ userId, smsHash }) {
+    const normalizedHash = String(smsHash ?? "").trim();
+    if (!userId || !normalizedHash) {
+        throw new Error("Données ACK SMS incomplètes");
+    }
+
+    return sequelize.transaction(async transaction => {
+        return withAdvisoryLock(
+            transaction,
+            `trackzo:sms:${normalizedHash}`,
+            async () => {
+                const deleted = await SmsReceipt.destroy({
+                    where: {
+                        userId,
+                        smsHash: normalizedHash,
+                        status: "COMPLETED"
+                    },
+                    transaction
+                });
+
+                return { acknowledged: true, deleted: deleted > 0 };
+            }
+        );
+    });
+}
+
+module.exports = { send, acknowledgeCompletedReceipt };

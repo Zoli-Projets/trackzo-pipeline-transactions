@@ -112,3 +112,49 @@ exports.sendSms = [
         }
     }
 ];
+
+
+exports.ackSms = [
+    requireAuth,
+    async (req, res) => {
+        try {
+            const userId =
+                req.user?.id ??
+                req.user?.userId ??
+                req.device?.userId;
+
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    error: "Utilisateur authentifié introuvable"
+                });
+            }
+
+            const body = (req.body && typeof req.body === "object") ? req.body : {};
+            const smsHash = String(body.smsHash ?? "").trim();
+
+            if (!smsHash) {
+                return res.status(422).json({
+                    success: false,
+                    error: "smsHash manquant"
+                });
+            }
+
+            const result = await SmsService.acknowledgeCompletedReceipt({
+                userId,
+                smsHash
+            });
+
+            return res.json({
+                success: true,
+                ...result
+            });
+        } catch (err) {
+            console.error("❌ Erreur ACK final SMS:", err);
+            return res.status(500).json({
+                success: false,
+                error: err.message || "Erreur serveur"
+            });
+        }
+    }
+];

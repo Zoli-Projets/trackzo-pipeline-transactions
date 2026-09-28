@@ -7,6 +7,7 @@ const Template = require("../models/Template");
 const Session = require("../models/Session");
 const { Op } = require("sequelize");
 const sequelize = require("../database/database");
+const { normalizeInternationalPhone } = require("./phoneService");
 
 async function createUserAccount(data) {
   return sequelize.transaction(async (transaction) => {
@@ -17,7 +18,7 @@ async function createUserAccount(data) {
 
     const user = await User.create({
       name: String(name).trim(),
-      phone: String(phone).trim(),
+      phone: normalizeInternationalPhone(phone, country),
       phoneVerified: false,
       email: email ? String(email).trim().toLowerCase() : null,
       emailVerified: false,

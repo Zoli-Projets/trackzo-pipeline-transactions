@@ -65,6 +65,7 @@ app.use("/api/trackzo",trackzoRoutes);
 app.use("/api/dashboard",dashboardRoutes);
 app.use("/api/admin", adminRoutes);
 app.post("/sms/send", smsController.sendSms);
+app.post("/sms/ack", smsController.ackSms);
   
 
 
