@@ -2,12 +2,7 @@ const sequelize = require("../database/database");
 const Subscription = require("../models/Subscription");
 const SubscriptionEvent = require("../models/SubscriptionEvent");
 
-const PLAN_CONFIG = {
-  TRIAL: { durationDays: 30, maxDevices: 5 },
-  BASIC: { durationDays: 30, maxDevices: 2 },
-  PRO: { durationDays: 30, maxDevices: 5 },
-  ENTERPRISE: { durationDays: 365, maxDevices: 10 }
-};
+const { PLAN_CONFIG } = require("../config/plans");
 
 function snapshot(subscription) {
   if (!subscription) return null;

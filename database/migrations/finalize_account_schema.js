@@ -101,9 +101,22 @@ async function finalizeAccountSchema(sequelize) {
   if (await tableExists(sequelize, "verification_codes")) {
     await sequelize.query(`CREATE INDEX IF NOT EXISTS verification_user_purpose_idx ON "verification_codes" ("userId", "purpose", "createdAt")`);
   }
+  await addColumnIfMissing(sequelize, "payments", "providerSessionId", `VARCHAR(255)`);
+  await addColumnIfMissing(sequelize, "payments", "providerTransactionId", `VARCHAR(255)`);
+  await addColumnIfMissing(sequelize, "payments", "providerEventId", `VARCHAR(255)`);
+  await addColumnIfMissing(sequelize, "payments", "checkoutUrl", `TEXT`);
+  await addColumnIfMissing(sequelize, "payments", "failureReason", `TEXT`);
+  await addColumnIfMissing(sequelize, "payments", "operatorReference", `VARCHAR(160)`);
+  await addColumnIfMissing(sequelize, "payments", "submittedAt", `TIMESTAMP WITH TIME ZONE`);
+  await addColumnIfMissing(sequelize, "payments", "reviewedAt", `TIMESTAMP WITH TIME ZONE`);
+  await addColumnIfMissing(sequelize, "payments", "reviewNote", `TEXT`);
   if (await tableExists(sequelize, "payments")) {
     await sequelize.query(`CREATE INDEX IF NOT EXISTS payments_user_idx ON "payments" ("userId")`);
-    await sequelize.query(`CREATE INDEX IF NOT EXISTS payments_reference_idx ON "payments" ("paymentReference") WHERE "paymentReference" IS NOT NULL`);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS payments_reference_unique ON "payments" ("paymentReference") WHERE "paymentReference" IS NOT NULL`);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS payments_wave_session_unique ON "payments" ("providerSessionId") WHERE "providerSessionId" IS NOT NULL`);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS payments_wave_transaction_unique ON "payments" ("providerTransactionId") WHERE "providerTransactionId" IS NOT NULL`);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS payments_wave_event_unique ON "payments" ("providerEventId") WHERE "providerEventId" IS NOT NULL`);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS payments_operator_reference_unique ON "payments" ("operatorReference") WHERE "operatorReference" IS NOT NULL`);
   }
   if (await tableExists(sequelize, "subscription_events")) {
     await sequelize.query(`CREATE INDEX IF NOT EXISTS subscription_events_user_idx ON "subscription_events" ("userId", "createdAt" DESC)`);

@@ -32,6 +32,17 @@
   </section>
 
   <section class="card">
+    <h2 style="margin-top:0;font-size:18px">Moyens de paiement manuels</h2>
+    <p class="muted">Un moyen n’est visible dans Trackzo que s’il est activé et possède un numéro/compte destinataire.</p>
+    <div id="methods"></div><div id="methodMessage" class="muted"></div>
+  </section>
+  <section class="card">
+    <div class="row"><div><h2 style="margin:0;font-size:18px">Paiements à vérifier</h2><p class="muted">Vérifie réellement la transaction chez l’opérateur avant de valider.</p></div><button id="refreshPayments" class="secondary">Actualiser</button></div>
+    <div style="overflow:auto"><table><thead><tr><th>Client</th><th>Réseau</th><th>Plan</th><th>Montant</th><th>Référence opérateur</th><th>Soumis</th><th>Action</th></tr></thead><tbody id="pendingPayments"></tbody></table></div>
+    <div id="paymentMessage" class="muted"></div>
+  </section>
+
+  <section class="card">
     <div class="row">
       <div class="field"><label>Rechercher un utilisateur</label><input id="search" placeholder="Nom, téléphone ou e-mail"></div>
       <button id="searchBtn">Rechercher</button>
@@ -143,6 +154,9 @@ async function deleteUser(){
     $('deleteUserBtn').disabled=false;
   }
 }
-$('save').onclick=()=>searchUsers();$('searchBtn').onclick=searchUsers;$('search').addEventListener('keydown',e=>{if(e.key==='Enter')searchUsers();});$('grantBtn').onclick=grant;$('cancelBtn').onclick=cancelSub;$('deleteUserBtn').onclick=deleteUser;
+
+async function loadPaymentMethods(){try{const d=await request('/payment-methods');$('methods').innerHTML='';for(const m of d.methods||[]){const div=document.createElement('div');div.className='card';div.style.boxShadow='none';div.innerHTML=`<div class="grid"><div><label>${esc(m.name)}</label><select data-f="enabled"><option value="false">Désactivé</option><option value="true" ${m.enabled?'selected':''}>Activé</option></select></div><div><label>Numéro / compte</label><input data-f="recipient" value="${esc(m.recipient||'')}" placeholder="+225..."></div><div><label>Nom marchand</label><input data-f="merchantName" value="${esc(m.merchantName||'TRACKZO')}"></div></div><div style="margin-top:8px"><label>Instructions</label><textarea data-f="instructions" rows="2">${esc(m.instructions||'')}</textarea></div><div class="actions"><button>Enregistrer ${esc(m.name)}</button></div>`;div.querySelector('button').onclick=async()=>{const body={};div.querySelectorAll('[data-f]').forEach(x=>body[x.dataset.f]=x.dataset.f==='enabled'?x.value==='true':x.value);try{await request('/payment-methods/'+encodeURIComponent(m.code),{method:'PUT',body:JSON.stringify(body)});$('methodMessage').innerHTML='<span class="ok">Configuration enregistrée.</span>';await loadPaymentMethods();}catch(e){$('methodMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';}};$('methods').appendChild(div);}}catch(e){$('methodMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';}}
+async function loadPendingPayments(){try{const d=await request('/manual-payments/pending');$('pendingPayments').innerHTML='';for(const p of d.payments||[]){const tr=document.createElement('tr');const u=p.user||{};tr.innerHTML=`<td>${esc(u.name||u.phone||u.email||p.userId)}</td><td>${esc(String(p.provider||'').replace('MANUAL:',''))}</td><td>${esc(p.plan)}</td><td>${esc(Number(p.amount).toLocaleString('fr-FR'))} ${esc(p.currency)}</td><td><b>${esc(p.operatorReference)}</b><br><span class="muted">${esc(p.paymentReference)}</span></td><td>${fmtDate(p.submittedAt)}</td><td><button data-a="ok">Valider</button> <button data-a="no" class="danger">Rejeter</button></td>`;tr.querySelector('[data-a=ok]').onclick=async()=>{if(!confirm('As-tu vérifié que cette transaction a réellement été reçue ?'))return;const note=prompt('Note de vérification (facultatif) :','Vérifié auprès de l’opérateur')||'';try{await request('/manual-payments/'+p.id+'/approve',{method:'POST',body:JSON.stringify({note})});await loadPendingPayments();}catch(e){alert(e.message);}};tr.querySelector('[data-a=no]').onclick=async()=>{const note=prompt('Motif du rejet :');if(!note)return;try{await request('/manual-payments/'+p.id+'/reject',{method:'POST',body:JSON.stringify({note})});await loadPendingPayments();}catch(e){alert(e.message);}};$('pendingPayments').appendChild(tr);} $('paymentMessage').textContent=(d.payments||[]).length+' paiement(s) en attente';}catch(e){$('paymentMessage').innerHTML='<span class="error">'+esc(e.message)+'</span>';}}
+$('save').onclick=()=>{searchUsers();loadPaymentMethods();loadPendingPayments();};$('searchBtn').onclick=searchUsers;$('search').addEventListener('keydown',e=>{if(e.key==='Enter')searchUsers();});$('grantBtn').onclick=grant;$('cancelBtn').onclick=cancelSub;$('deleteUserBtn').onclick=deleteUser;$('refreshPayments').onclick=loadPendingPayments;
 </script>
 </body></html>

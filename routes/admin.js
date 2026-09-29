@@ -13,8 +13,25 @@ const AccountDeletionRequest = require("../models/AccountDeletionRequest");
 const { deleteUserAccount } = require("../services/accountDeletionService");
 const { grantSubscription, cancelSubscription, getCurrentSubscription } = require("../services/subscriptionService");
 const { revokeUserSessions } = require("../services/sessionService");
+const manualPayments = require("../services/manualPaymentService");
 
 router.use(requireAdmin);
+router.get("/payment-methods", async (req, res) => {
+  try { return res.json({ success:true, methods:await manualPayments.allMethods() }); } catch(e) { return res.status(500).json({success:false,error:e.message}); }
+});
+router.put("/payment-methods/:code", async (req, res) => {
+  try { return res.json({ success:true, method:await manualPayments.saveMethod(req.params.code,req.body||{}) }); } catch(e) { return res.status(400).json({success:false,error:e.message}); }
+});
+router.get("/manual-payments/pending", async (req, res) => {
+  try { return res.json({success:true,payments:await manualPayments.listPending()}); } catch(e) { return res.status(500).json({success:false,error:e.message}); }
+});
+router.post("/manual-payments/:id/approve", async (req, res) => {
+  try { return res.json({success:true,payment:await manualPayments.approve(req.params.id,req.adminActor,req.body?.note)}); } catch(e) { return res.status(400).json({success:false,error:e.message}); }
+});
+router.post("/manual-payments/:id/reject", async (req, res) => {
+  try { return res.json({success:true,payment:await manualPayments.reject(req.params.id,req.adminActor,req.body?.note)}); } catch(e) { return res.status(400).json({success:false,error:e.message}); }
+});
+
 
 router.get("/users", async (req, res) => {
   try {

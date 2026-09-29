@@ -13,6 +13,10 @@ const app = express();
 
 app.use(cors());
 
+// Wave exige la signature du corps HTTP BRUT : cette route doit précéder express.json().
+const paymentRoutes = require("./routes/payments");
+app.post("/api/payments/wave/webhook", express.raw({ type: "application/json", limit: "256kb" }), paymentRoutes.waveWebhook);
+
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 app.use(express.static(__dirname));
@@ -35,6 +39,7 @@ require("./models/SmsReceipt");
 require("./models/Session");
 require("./models/VerificationCode");
 require("./models/Payment");
+require("./models/PaymentMethod");
 require("./models/SubscriptionEvent");
 require("./models/associations");
 
@@ -64,8 +69,11 @@ app.use("/api/google",googleRoutes);
 app.use("/api/trackzo",trackzoRoutes);
 app.use("/api/dashboard",dashboardRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/payments", paymentRoutes.router);
 app.post("/sms/send", smsController.sendSms);
 app.post("/sms/ack", smsController.ackSms);
+app.get("/payment/wave/success", (req, res) => res.sendFile(__dirname + "/payment-wave-success.html"));
+app.get("/payment/wave/error", (req, res) => res.sendFile(__dirname + "/payment-wave-error.html"));
   
 
 
@@ -82,37 +90,7 @@ const CONFIG = {
     batch_processing: true
   },
   
-plans:{
-
-trial:{
-name:"Essai gratuit",
-price:0,
-duration:30,
-devices:5
-},
-
-basic:{
-name:"Basic",
-price:3000,
-duration:30,
-devices:2
-},
-
-pro:{
-name:"Pro",
-price:5000,
-duration:30,
-devices:5
-},
-
-enterprise:{
-name:"Enterprise",
-price:30000,
-duration:365,
-devices:10
-}
-
-}
+plans: require("./config/plans").PLAN_CONFIG
 
 };
 
