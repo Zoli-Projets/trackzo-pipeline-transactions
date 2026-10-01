@@ -948,6 +948,36 @@ return res.json({
 );
 
 // ======================================
+// ERREURS GOOGLE DRIVE LISIBLES
+// ======================================
+
+function isGoogleDriveQuotaExceeded(error) {
+    const parts = [
+        error?.message,
+        error?.cause?.message,
+        error?.response?.data?.error?.message,
+        error?.response?.data?.error?.status,
+        ...(Array.isArray(error?.response?.data?.error?.errors)
+            ? error.response.data.error.errors.map((item) =>
+                `${item?.reason || ""} ${item?.message || ""}`
+              )
+            : [])
+    ];
+
+    const text = parts
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+    return (
+        text.includes("storage quota has been exceeded") ||
+        text.includes("drive storage quota") ||
+        text.includes("storagequota") ||
+        text.includes("quota exceeded")
+    );
+}
+
+// ======================================
 // GARANTIR LE JOURNALIER DU JOUR
 // ======================================
 
@@ -1069,12 +1099,29 @@ router.post(
             );
 
 
+            if (isGoogleDriveQuotaExceeded(error)) {
+
+                return res.status(507).json({
+
+                    success: false,
+
+                    code:
+                        "GOOGLE_DRIVE_QUOTA_EXCEEDED",
+
+                    error:
+                        "Votre espace de stockage Google Drive est plein. Trackzo ne peut pas créer le journalier du jour. Libérez de l’espace dans votre compte Google, videz la corbeille si nécessaire, puis appuyez sur Réessayer."
+
+                });
+
+            }
+
+
             return res.status(500).json({
 
                 success: false,
 
                 error:
-                    error.message
+                    "Impossible de préparer le journalier du jour. Veuillez réessayer."
 
             });
 

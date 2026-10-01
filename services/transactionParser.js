@@ -256,6 +256,20 @@ function detectType(message) {
     // Règles métier Moov uniquement. Les autres opérateurs continuent
     // d'utiliser exactement les règles génériques ci-dessous.
     if (operator === "Moov Money") {
+        // Un relevé de soldes Moov contient le libellé « compte retrait », mais
+        // ce n'est pas un retrait. Le laisser en « Autre » permet de l'orienter
+        // vers Alertes sans polluer les statistiques de transactions.
+        const isBalanceMessage =
+            text.includes("solde de votre compte principal") &&
+            (
+                text.includes("solde de votre compte retrait") ||
+                text.includes("solde de votre compte commission")
+            );
+
+        if (isBalanceMessage) {
+            return "Autre";
+        }
+
         const toPrincipal =
             text.includes("vers votre compte principal") ||
             text.includes("vers le compte principal");

@@ -419,6 +419,34 @@ function classifyMessage(message) {
 
     const amount = extractAmount(text);
     const operator = detectOperator(text);
+
+    // Moov Money — un SMS de consultation/notification de soldes n'est pas
+    // une transaction. Le mot « retrait » peut apparaître dans « compte retrait »
+    // et ne doit jamais, à lui seul, transformer ce message en retrait financier.
+    // Cette règle est volontairement limitée à Moov afin de ne modifier aucun
+    // comportement Orange, MTN, Wave ni les vraies opérations Moov.
+    const normalized = normalizeText(text);
+    const isMoovBalanceMessage =
+        operator === "Moov Money" &&
+        normalized.includes("solde de votre compte principal") &&
+        (
+            normalized.includes("solde de votre compte retrait") ||
+            normalized.includes("solde de votre compte commission")
+        );
+
+    if (isMoovBalanceMessage) {
+        return {
+            isTransaction: false,
+            confidence: 0.99,
+            reason: "Alerte solde Moov Money",
+            amount,
+            operator,
+            type: "Autre",
+            reference: "",
+            score: 0
+        };
+    }
+
     const reference = extractReference(text);
     const type = detectType(text, reference, operator);
 
