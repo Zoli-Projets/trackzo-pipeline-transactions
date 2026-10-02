@@ -270,6 +270,59 @@ async function markProcessed(sheets, spreadsheetId, processed) {
     });
 }
 
+/**
+ * Confirme que chaque ligne brute a réellement laissé une trace durable dans
+ * Nettoyé ou Alertes avant de la passer à OK. Cette lecture de confirmation
+ * protège notamment les réceptions rapprochées : un SMS ne peut plus être
+ * considéré comme traité uniquement parce que le lot d'écriture s'est terminé.
+ *
+ * Pour un rejeu idempotent, la présence de la référence dans Nettoyé suffit :
+ * la transaction avait déjà été écrite lors d'un passage précédent.
+ */
+async function confirmProcessedOutputs(sheets, spreadsheetId, processed) {
+    if (!processed.length) return [];
+
+    const response = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
+        ranges: [
+            "'Nettoyé'!F:G",
+            "'Alertes'!F:G"
+        ],
+        valueRenderOption: "FORMATTED_VALUE"
+    });
+
+    const ranges = response.data.valueRanges || [];
+    const cleanRows = ranges[0]?.values || [];
+    const alertRows = ranges[1]?.values || [];
+
+    const cleanReferences = new Set(
+        cleanRows
+            .slice(1)
+            .map(row => String(row[0] || "").trim().toUpperCase())
+            .filter(Boolean)
+    );
+
+    const outputMessages = [...cleanRows.slice(1), ...alertRows.slice(1)]
+        .map(row => singleLineCell(row[1]))
+        .filter(Boolean);
+
+    return processed.filter(raw => {
+        const message = singleLineCell(raw.message);
+        if (
+            message &&
+            outputMessages.some(value => value === message || value.endsWith(message))
+        ) return true;
+
+        try {
+            const result = classifyMessage(raw.message);
+            const reference = String(result.reference || "").trim().toUpperCase();
+            return Boolean(result.isTransaction && reference && cleanReferences.has(reference));
+        } catch (_) {
+            return false;
+        }
+    });
+}
+
 async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
     const sheets = await getSheetsClient(refreshToken);
     const snapshot = await readProcessingSnapshot(sheets, spreadsheetId);
@@ -490,7 +543,25 @@ async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
     }
     await insertRowsAtTop(sheets, spreadsheetId, "Nettoyé", cleanRows, outputSheetIds);
     await insertRowsAtTop(sheets, spreadsheetId, "Alertes", alertRows, outputSheetIds);
-    await markProcessed(sheets, spreadsheetId, processed);
+
+    // Une ligne brute ne devient OK qu'après vérification de sa présence réelle
+    // dans une feuille de sortie (ou de sa référence déjà présente pour un rejeu).
+    // Si Google retourne sans erreur mais que la trace attendue est absente, la
+    // ligne reste PENDING et sera reprise automatiquement au prochain passage.
+    const confirmedProcessed = await confirmProcessedOutputs(
+        sheets,
+        spreadsheetId,
+        processed
+    );
+    await markProcessed(sheets, spreadsheetId, confirmedProcessed);
+
+    const unconfirmed = processed.length - confirmedProcessed.length;
+    if (unconfirmed > 0) {
+        console.warn("⚠️ Lignes brutes non confirmées, laissées à retraiter:", {
+            spreadsheetId,
+            count: unconfirmed
+        });
+    }
 
     // Les statistiques sont regenerees par le meme passage du trigger, une fois
     // Nettoye mis a jour.
@@ -504,6 +575,7 @@ async function processDailySheetUnlocked(refreshToken, spreadsheetId) {
         cleaned: cleanRows.length,
         alerts: alertRows.length,
         errors,
+        unconfirmed,
         statistics
     };
 }
